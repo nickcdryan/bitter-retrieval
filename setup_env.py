@@ -42,7 +42,7 @@ def setup_git_config():
         if not name:
             name = current_name
     else:
-        name = input("\nEnter your name: ").strip()
+        name = input("\nEnter your github username: ").strip()
     
     if current_email:
         email = input(f"Enter your email [{current_email}]: ").strip()

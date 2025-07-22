@@ -122,6 +122,15 @@ echo -e "${YELLOW}📦 Installing project dependencies...${NC}"
 poetry install
 echo -e "${GREEN}✅ Project dependencies installed${NC}"
 
+# Step 6b: Install flash-attn for optimized attention (requires CUDA)
+echo -e "${YELLOW}⚡ Installing flash-attn for faster inference...${NC}"
+if poetry run pip install flash-attn --no-build-isolation >/dev/null 2>&1; then
+    echo -e "${GREEN}✅ flash-attn installed successfully${NC}"
+else
+    echo -e "${YELLOW}⚠️  flash-attn installation failed (this is optional)${NC}"
+    echo "  This is normal on some systems - the script will continue"
+fi
+
 # Step 7: Create helpful aliases and environment setup
 echo -e "${YELLOW}⚙️  Setting up environment...${NC}"
 
@@ -197,7 +206,7 @@ echo "  bitter-train          # Shortcut for training (after sourcing ~/.bashrc)
 echo ""
 echo -e "${YELLOW}📝 Next steps:${NC}"
 echo "1. Source your bashrc: source ~/.bashrc"
-echo "2. Configure API keys: nano .env"
+echo "2. Configure API keys: poetry run python setup_env.py (recommended) or nano .env"
 echo "3. Test setup: poetry run python test_setup.py"
 echo "4. Run training: ./run_training.sh <google_drive_file_id>"
 echo ""

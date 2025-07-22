@@ -5,18 +5,51 @@ A simplified training pipeline for retrieval models with LLM-guided signals.
 ## 🚀 Quick Setup
 
 ### Prerequisites
-- Python 3.8+
+- Fresh Linux server (Ubuntu/Debian/Fedora/RHEL/Arch supported)
+- Python 3.8+ (will be installed if missing)
 - CUDA-capable GPU (recommended)
 - Your soft-labeled data on Google Drive
 
-### 1. Install Dependencies
+### 1. Automated Setup (Recommended for New Servers)
+For a completely fresh Linux server, run our automated setup:
 ```bash
-pip install -r requirements.txt
-# or with uv:
-uv sync
+git clone <your-repo-url>
+cd bitter-retrieval
+chmod +x setup.sh
+./setup.sh
 ```
 
-### 2. Download Your Data
+This script will:
+- ✅ Detect your Linux distribution
+- ✅ Install system dependencies (Python, curl, git, etc.)
+- ✅ Install pipx and Poetry
+- ✅ Configure PyTorch with CUDA 12.8 support
+- ✅ Install all ML dependencies (transformers, datasets, wandb)
+- ✅ Set up helpful aliases and environment
+- ✅ Verify PyTorch CUDA installation
+
+### 2. Manual Setup (If You Already Have Poetry)
+```bash
+# Add PyTorch CUDA source
+poetry source add --priority=explicit pytorch https://download.pytorch.org/whl/cu128
+
+# Install dependencies
+poetry install
+```
+
+### 3. Setup API Keys
+```bash
+poetry run python setup_env.py
+```
+This will guide you through setting up your Hugging Face and Weights & Biases API keys.
+
+### 4. Verify Setup
+```bash
+poetry run python test_setup.py
+```
+This will verify that all dependencies are installed and CUDA is working correctly.
+
+### 5. Download Your Data
 Get your Google Drive file ID from the share link:
 ```
 https://drive.google.com/file/d/1ABCdef123xyz456/view
@@ -162,7 +195,8 @@ python -m src.bitter_retrieval.train \
 
 ### Import Errors
 - Make sure you're in the repo root directory
-- Run `pip install -r requirements.txt`
+- Run `./setup.sh` on fresh servers or `poetry install` if you already have Poetry
+- Ensure you've sourced your bashrc: `source ~/.bashrc`
 
 ## 📊 Monitoring
 

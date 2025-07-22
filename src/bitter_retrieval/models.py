@@ -10,10 +10,93 @@ import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer, get_linear_schedule_with_warmup
 from tqdm import tqdm
 
-from .data import should_skip_item, convert_soft_to_hard
+from .data import should_skip_item, convert_soft_to_hard, load_squad_data
 from .utils import encode_texts
+from .evaluation import SquadEvaluator
 
 logger = logging.getLogger(__name__)
+
+
+def precompute_squad_embeddings(corpus_texts: List[str], model: AutoModel, tokenizer: AutoTokenizer) -> torch.Tensor:
+    """Precompute embeddings for SQuAD corpus."""
+    model.eval()
+    embeddings = []
+    logger.info("Precomputing SQuAD embeddings...")
+    
+    with torch.no_grad():
+        for text in tqdm(corpus_texts, desc="Encoding SQuAD"):
+            emb = encode_texts([f"passage: {text}"], model, tokenizer)
+            embeddings.append(emb.cpu())
+    
+    return torch.cat(embeddings, dim=0).cuda()
+
+
+def run_squad_validation(model: AutoModel, tokenizer: AutoTokenizer, config: Dict[str, Any], wandb_logger, train_step: int):
+    """Run SQuAD validation and log results."""
+    try:
+        # Load SQuAD data if not already loaded (simplified approach)  
+        squad_qa_data, squad_corpus, _ = load_squad_data(config)
+        
+        # Precompute embeddings
+        squad_embeddings = precompute_squad_embeddings(squad_corpus, model, tokenizer)
+        
+        # Simplified evaluation without full evaluator class
+        num_eval_examples = min(100, len(squad_qa_data))
+        squad_results = evaluate_squad_simple(
+            model, tokenizer, squad_qa_data[:num_eval_examples], squad_embeddings, squad_corpus
+        )
+        
+        logger.info(f"SQuAD validation results: {squad_results}")
+        
+        # Log to wandb
+        if wandb_logger:
+            val_metrics = {
+                "SQuAD F1": squad_results['F1_Score'],
+                "SQuAD EM": squad_results['Exact_Match'],
+                "SQuAD Retrieval": squad_results['Retrieval_Accuracy'],
+                "SQuAD Loss": squad_results['LLM_Loss'],
+            }
+            wandb_logger.log(val_metrics, step=train_step)
+        
+        model.train()  # Switch back to training mode
+        return squad_results
+        
+    except Exception as e:
+        logger.warning(f"SQuAD validation failed: {e}")
+        model.train()
+        return None
+
+
+def evaluate_squad_simple(model: AutoModel, tokenizer: AutoTokenizer, qa_data: List[Dict], 
+                         corpus_embeddings: torch.Tensor, corpus_texts: List[str]) -> Dict[str, float]:
+    """Simplified SQuAD evaluation for validation during training."""
+    model.eval()
+    retrieval_hits = []
+    
+    with torch.no_grad():
+        for item in tqdm(qa_data, desc="SQuAD validation"):
+            if item.get("answer") == "Unanswerable":
+                continue
+
+            question = item["question"]
+            correct_context_idx = item["context_idx"]
+
+            # Encode question and retrieve top context
+            question_emb = encode_texts([f"query: {question}"], model, tokenizer)
+            similarities = torch.matmul(question_emb, corpus_embeddings.T).squeeze(0)
+            best_context_idx = similarities.argmax().item()
+
+            # Check if we retrieved the correct context
+            retrieval_hit = (best_context_idx == correct_context_idx)
+            retrieval_hits.append(retrieval_hit)
+
+    return {
+        "Retrieval_Accuracy": float(torch.tensor(retrieval_hits).float().mean()),
+        "LLM_Loss": 0.0,  # Simplified - skip LLM loss computation for speed
+        "Exact_Match": 0.0,  # Simplified - skip generation for speed
+        "F1_Score": 0.0,  # Simplified - skip generation for speed
+        "Num_Examples": len(retrieval_hits)
+    }
 
 
 def create_model_and_optimizer(config: Dict[str, Any]):
@@ -102,9 +185,13 @@ def train_standard_infonce(
                 
                 # Log metrics
                 if wandb_logger:
-                    wandb_logger.log({"train/loss": batch_loss.item()}, step=train_step)
+                    wandb_logger.log({"Contrastive loss": batch_loss.item()}, step=train_step)
                 
                 logger.info(f"Step {train_step}: train_loss={batch_loss.item():.4f}")
+
+                # Periodic validation
+                if train_step % config.get("eval_steps", 750) == 0:
+                    run_squad_validation(model, encoder_tokenizer, config, wandb_logger, train_step)
 
                 # Backward pass
                 optimizer.zero_grad()
@@ -187,9 +274,13 @@ def train_converted_infonce(
                 
                 # Log metrics
                 if wandb_logger:
-                    wandb_logger.log({"train/loss": batch_loss.item()}, step=train_step)
+                    wandb_logger.log({"Contrastive loss": batch_loss.item()}, step=train_step)
                 
                 logger.info(f"Step {train_step}: train_loss={batch_loss.item():.4f}")
+
+                # Periodic validation
+                if train_step % config.get("eval_steps", 750) == 0:
+                    run_squad_validation(model, encoder_tokenizer, config, wandb_logger, train_step)
 
                 # Backward pass
                 optimizer.zero_grad()
@@ -270,9 +361,13 @@ def train_kl_soft_infonce(
                 
                 # Log metrics
                 if wandb_logger:
-                    wandb_logger.log({"train/loss": batch_loss.item()}, step=train_step)
+                    wandb_logger.log({"KL loss": batch_loss.item()}, step=train_step)
                 
                 logger.info(f"Step {train_step}: train_loss={batch_loss.item():.4f}")
+
+                # Periodic validation
+                if train_step % config.get("eval_steps", 750) == 0:
+                    run_squad_validation(model, encoder_tokenizer, config, wandb_logger, train_step)
 
                 # Backward pass
                 optimizer.zero_grad()

@@ -10,24 +10,39 @@ import torch
 import wandb
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
+from .auth import setup_authentication, check_env_setup
 from .config import parse_args, load_config
 from .data import set_random_seed, load_train_data, load_eval_data, load_squad_data, get_squad_test_split
 from .models import train_model, create_baseline_model
 from .utils import setup_logging
 
 
-def setup_wandb(config: dict) -> Optional[object]:
+def setup_wandb(config: dict, auth_status: dict) -> Optional[object]:
     """Initialize Weights & Biases logging."""
     if not config["use_wandb"]:
         return None
     
+    if not auth_status.get("wandb", False):
+        logging.warning("Weights & Biases authentication failed, disabling W&B logging")
+        return None
+    
     try:
         run_name = config["run_name"] or f"{config['method']}-temp:{config['temperature']}"
-        wandb.init(
-            project=config["wandb_project"],
-            name=run_name,
-            config=config
-        )
+        
+        # Get entity from environment if set
+        import os
+        entity = os.getenv("WANDB_ENTITY")
+        
+        wandb_init_kwargs = {
+            "project": config["wandb_project"],
+            "name": run_name,
+            "config": config
+        }
+        
+        if entity:
+            wandb_init_kwargs["entity"] = entity
+        
+        wandb.init(**wandb_init_kwargs)
         return wandb
     except Exception as e:
         logging.error(f"Failed to initialize wandb: {e}")
@@ -62,11 +77,20 @@ def run_training_experiment(config: dict) -> dict:
     """Run a single training experiment."""
     logger = logging.getLogger(__name__)
     
+    # Setup authentication
+    logger.info("Setting up authentication...")
+    auth_status = setup_authentication()
+    
+    if not auth_status["huggingface"]:
+        logger.error("Hugging Face authentication failed. Cannot proceed.")
+        check_env_setup()
+        raise RuntimeError("Authentication failed. Please set up your API keys.")
+    
     # Set random seed
     set_random_seed(config["seed"])
     
     # Setup wandb
-    wandb_logger = setup_wandb(config)
+    wandb_logger = setup_wandb(config, auth_status)
     
     try:
         # Load data
@@ -118,6 +142,9 @@ def main():
     # Setup logging first
     setup_logging("INFO")
     logger = logging.getLogger(__name__)
+    
+    # Check environment setup first
+    check_env_setup()
     
     try:
         # Create config from command line arguments

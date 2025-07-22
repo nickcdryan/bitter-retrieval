@@ -45,8 +45,7 @@ def encode_texts(
     ).to(device)
     
     # Get model outputs
-    with torch.no_grad():
-        outputs = model(**inputs)
+    outputs = model(**inputs)
     
     # Mean pooling with attention mask
     attention_mask = inputs['attention_mask']

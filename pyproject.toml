@@ -9,13 +9,33 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "ruff (>=0.12.4,<0.13.0)",
-    "numpy (>=2.3.1,<3.0.0)"
+    "numpy (>=2.3.1,<3.0.0)",
+    "gdown (>=5.2.0,<6.0.0)",
+    "torch (>=2.7.1,<3.0.0)",
+    "torchvision (>=0.22.1,<0.23.0)",
+    "torchaudio (>=2.7.1,<3.0.0)",
+    "transformers (>=4.53.2,<5.0.0)",
+    "datasets (>=4.0.0,<5.0.0)",
+    "wandb (>=0.21.0,<0.22.0)",
+    "python-dotenv (>=1.1.1,<2.0.0)",
+    "huggingface-hub (>=0.33.4,<0.34.0)",
+    "einops (>=0.8.1,<0.9.0)"
 ]
 
 [tool.poetry]
 packages = [{include = "bitter_retrieval", from = "src"}]
 
 
+[[tool.poetry.source]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu128"
+priority = "explicit"
+
+
+[tool.poetry.dependencies]
+torch = {source = "pytorch"}
+torchvision = {source = "pytorch"}
+torchaudio = {source = "pytorch"}
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"

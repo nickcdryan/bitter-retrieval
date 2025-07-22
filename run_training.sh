@@ -44,15 +44,43 @@ echo -e "${YELLOW}📦 Installing dependencies...${NC}"
 if command -v uv &> /dev/null; then
     echo "Using uv for faster installs..."
     uv sync
+elif command -v poetry &> /dev/null; then
+    echo "Using Poetry..."
+    poetry install
 else
-    pip install -r requirements.txt
+    echo -e "${RED}❌ Neither uv nor Poetry found!${NC}"
+    echo ""
+    echo "🔧 Setting up environment automatically..."
+    echo "This will install pipx and Poetry for you."
+    echo ""
+    read -p "Continue with automatic setup? [Y/n]: " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Nn]$ ]]; then
+        echo "Setup cancelled. Please install Poetry manually:"
+        echo "curl -sSL https://install.python-poetry.org | python3 -"
+        exit 1
+    fi
+    
+    # Run the setup script
+    ./setup.sh
+    
+    # Source bashrc to get updated PATH
+    export PATH="$HOME/.local/bin:$PATH"
+    
+    # Verify poetry is now available
+    if ! command -v poetry &> /dev/null; then
+        echo -e "${RED}❌ Setup failed. Please run ./setup.sh manually${NC}"
+        exit 1
+    fi
+    
+    echo -e "${GREEN}✅ Setup complete! Poetry is now available.${NC}"
 fi
 echo -e "${GREEN}✅ Dependencies installed${NC}"
 echo ""
 
 # Step 2: Download data
 echo -e "${YELLOW}📥 Downloading data from Google Drive...${NC}"
-python download_data.py "$FILE_ID"
+poetry run python download_data.py "$FILE_ID"
 echo ""
 
 # Step 3: Verify data exists
@@ -69,7 +97,7 @@ echo ""
 
 # Step 4: Start training
 echo -e "${YELLOW}🔥 Starting training with method: $METHOD${NC}"
-echo "Command: python -m src.bitter_retrieval.train --method $METHOD"
+echo "Command: poetry run python -m src.bitter_retrieval.train --method $METHOD"
 echo ""
 
 # Create a run name with timestamp
@@ -77,7 +105,7 @@ TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 RUN_NAME="${METHOD}_${TIMESTAMP}"
 
 # Run training with nice defaults
-python -m src.bitter_retrieval.train \
+poetry run python -m src.bitter_retrieval.train \
     --method "$METHOD" \
     --run-name "$RUN_NAME" \
     --batch-size 2 \

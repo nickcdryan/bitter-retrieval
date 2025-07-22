@@ -197,7 +197,7 @@ echo "  bitter-train          # Shortcut for training (after sourcing ~/.bashrc)
 echo ""
 echo -e "${YELLOW}📝 Next steps:${NC}"
 echo "1. Source your bashrc: source ~/.bashrc"
-echo "2. Configure API keys: nano .env"
+echo "2. Configure API keys: poetry run python setup_env.py (recommended) or nano .env"
 echo "3. Test setup: poetry run python test_setup.py"
 echo "4. Run training: ./run_training.sh <google_drive_file_id>"
 echo ""

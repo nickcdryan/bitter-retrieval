@@ -1,10 +1,79 @@
 #!/usr/bin/env python3
 """
-Helper script to set up API keys for bitter-retrieval.
+Helper script to set up API keys and Git configuration for bitter-retrieval.
 """
 
 import os
+import subprocess
 from pathlib import Path
+
+
+def setup_git_config():
+    """Interactive setup of Git configuration."""
+    print("\n🔧 Git Configuration Setup")
+    print("=" * 40)
+    
+    # Check if git is already configured
+    try:
+        result = subprocess.run(['git', 'config', 'user.name'], capture_output=True, text=True)
+        current_name = result.stdout.strip() if result.returncode == 0 else None
+        
+        result = subprocess.run(['git', 'config', 'user.email'], capture_output=True, text=True)
+        current_email = result.stdout.strip() if result.returncode == 0 else None
+        
+        if current_name and current_email:
+            print(f"✅ Git already configured:")
+            print(f"   Name: {current_name}")
+            print(f"   Email: {current_email}")
+            response = input("\nDo you want to update Git config? [y/N]: ").lower().strip()
+            if response != 'y':
+                print("Keeping existing Git configuration")
+                return
+    except FileNotFoundError:
+        print("❌ Git not found. Please install Git first.")
+        return
+    
+    print("\n📝 Setting up Git configuration...")
+    print("This is needed to make commits and push changes.")
+    
+    # Get user input
+    if current_name:
+        name = input(f"\nEnter your name [{current_name}]: ").strip()
+        if not name:
+            name = current_name
+    else:
+        name = input("\nEnter your name: ").strip()
+    
+    if current_email:
+        email = input(f"Enter your email [{current_email}]: ").strip()
+        if not email:
+            email = current_email
+    else:
+        email = input("Enter your email: ").strip()
+    
+    if not name or not email:
+        print("❌ Name and email are required for Git configuration")
+        return
+    
+    try:
+        # Set global Git configuration
+        subprocess.run(['git', 'config', '--global', 'user.name', name], check=True)
+        subprocess.run(['git', 'config', '--global', 'user.email', email], check=True)
+        
+        print(f"\n✅ Git configured successfully!")
+        print(f"   Name: {name}")
+        print(f"   Email: {email}")
+        
+        # Show recommended workflow
+        print(f"\n💡 Recommended workflow for pushing changes:")
+        print("   git checkout -b feature/my-changes")
+        print("   git add .")
+        print("   git commit -m 'Description of changes'")
+        print("   git push origin feature/my-changes")
+        print("   # Then create a Pull Request on GitHub")
+        
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Failed to configure Git: {e}")
 
 
 def setup_env_file():
@@ -50,7 +119,7 @@ def setup_env_file():
     wandb_entity = ""
     if wandb_key:
         print("\n3️⃣  Weights & Biases Settings")
-        wandb_entity = input("   Enter your W&B username/entity (optional): ").strip()
+        wandb_entity = input("   Enter your W&B username (optional): ").strip()
     
     # Update .env file
     env_content = []
@@ -102,14 +171,29 @@ def setup_env_file():
         print("✅ Weights & Biases: Configured")
     else:
         print("⚠️  Weights & Biases: Not configured (optional)")
+
+
+def main():
+    """Main setup function that runs both API key and Git setup."""
+    print("🚀 Bitter Retrieval Setup")
+    print("=" * 50)
+    print("This script will help you set up:")
+    print("• API keys (.env file)")
+    print("• Git configuration")
     
+    # Setup API keys
+    setup_env_file()
+    
+    # Setup Git
+    setup_git_config()
+    
+    print("\n" + "=" * 50)
+    print("🎉 Setup complete!")
     print("\n💡 Next steps:")
     print("1. Test your setup: poetry run python test_setup.py")
     print("2. Run training: ./run_training.sh <google_drive_file_id>")
-    
-    if not hf_token:
-        print("\n⚠️  Warning: You still need to set HUGGINGFACE_TOKEN to train models!")
+    print("3. Make changes and push with: git checkout -b your-branch-name")
 
 
 if __name__ == "__main__":
-    setup_env_file() 
+    main() 

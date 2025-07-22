@@ -3,22 +3,24 @@
 Clean MS MARCO soft labeling script with Hugging Face Hub upload
 
 SETUP:
-    poetry install torch transformers datasets huggingface_hub tqdm
+    # Add tqdm to dependencies first:
+    poetry add tqdm
+    poetry install
     huggingface-cli login
 
 TEST RUN (100 examples per split):
-    python label_msmarco.py --split train --num 100 --upload-hf "nickcdryan/ms_marco_softlabel_Qwen3-4B"
-    python label_msmarco.py --split validation --num 100 --upload-hf "nickcdryan/ms_marco_softlabel_Qwen3-4B"
-    python label_msmarco.py --split test --num 100 --upload-hf "nickcdryan/ms_marco_softlabel_Qwen3-4B"
+    poetry run python label_msmarco.py --split train --num 100 --upload-hf "nickcdryan/ms_marco_softlabel_Qwen3-4B"
+    poetry run python label_msmarco.py --split validation --num 100 --upload-hf "nickcdryan/ms_marco_softlabel_Qwen3-4B"
+    poetry run python label_msmarco.py --split test --num 100 --upload-hf "nickcdryan/ms_marco_softlabel_Qwen3-4B"
 
 FULL RUN (all examples):
-    python label_msmarco.py --split train --num 808731 --upload-hf "nickcdryan/ms_marco_softlabel_Qwen3-4B"
-    python label_msmarco.py --split validation --num 101093 --upload-hf "nickcdryan/ms_marco_softlabel_Qwen3-4B"
-    python label_msmarco.py --split test --num 101092 --upload-hf "nickcdryan/ms_marco_softlabel_Qwen3-4B"
+    poetry run python label_msmarco.py --split train --num 808731 --upload-hf "nickcdryan/ms_marco_softlabel_Qwen3-4B"
+    poetry run python label_msmarco.py --split validation --num 101093 --upload-hf "nickcdryan/ms_marco_softlabel_Qwen3-4B"
+    poetry run python label_msmarco.py --split test --num 101092 --upload-hf "nickcdryan/ms_marco_softlabel_Qwen3-4B"
 
 DIFFERENT MODELS:
     # Llama 3.2 3B
-    python label_msmarco.py --model "meta-llama/Llama-3.2-3B" --split train --num 100 --upload-hf "nickcdryan/ms_marco_softlabel_llama-3.2-3b"
+    poetry run python label_msmarco.py --model "meta-llama/Llama-3.2-3B" --split train --num 100 --upload-hf "nickcdryan/ms_marco_softlabel_llama-3.2-3b"
     
 
 NAMING CONVENTION:
@@ -36,6 +38,11 @@ from tqdm import tqdm
 import json
 import argparse
 from pathlib import Path
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 
 def compute_llm_soft_labels(data, llm, llm_tokenizer, device, batch_size, max_samples):
@@ -122,13 +129,20 @@ def upload_to_hf_hub(data, dataset_name, split_name, model_name):
     try:
         from huggingface_hub import HfApi
         
+        # Get HF token from environment
+        hf_token = os.getenv('HUGGINGFACE_TOKEN') or os.getenv('HF_TOKEN')
+        if not hf_token:
+            print("Error: No Hugging Face token found. Set HUGGINGFACE_TOKEN in .env file")
+            return
+        
         # Convert to HF Dataset
         dataset = Dataset.from_list(data)
         
-        # Push to hub
+        # Push to hub with explicit token
         dataset.push_to_hub(
             dataset_name,
             split=split_name,
+            token=hf_token,
             commit_message=f"Add {split_name} split with {model_name} soft labels"
         )
         
@@ -147,7 +161,7 @@ def main():
     parser.add_argument("--start", type=int, default=0, help="Start point in dataset")
     parser.add_argument("--num", type=int, default=1000, help="Number of examples")
     parser.add_argument("--output-dir", default="data/", help="Output directory")
-    parser.add_argument("--batch-size", type=int, default=32, help="LLM batch size")
+    parser.add_argument("--batch-size", type=int, default=64, help="LLM batch size")
     parser.add_argument("--upload-hf", help="Upload to HF Hub (dataset name, e.g. 'username/msmarco-soft-labels')")
     
     args = parser.parse_args()

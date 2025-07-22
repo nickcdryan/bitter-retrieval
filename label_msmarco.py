@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Clean MS MARCO soft labeling script with Hugging Face Hub upload
+
+poetry run python label_msmarco.py --model Qwen/Qwen3-8B-Base --split test --num 0 --dtype bf16 --upload-hf "nickcdryan/ms_marco_softlabel_Qwen3-8B-Base_bf16"
 
 PERFORMANCE OPTIMIZATIONS:
     - Global batching for better GPU utilization
@@ -236,7 +237,7 @@ def process_all_splits(model_name, upload_hf_base, dtype="bf16", batch_size=64):
 
 def main():
     parser = argparse.ArgumentParser(description="Generate soft labels for MS MARCO dataset")
-    parser.add_argument("--model", default="Qwen/Qwen3-4B", help="HuggingFace model path")
+    parser.add_argument("--model", default="Qwen/Qwen3-8B-Base", help="HuggingFace model path")
     parser.add_argument("--split", default="train", choices=["train", "validation", "test"], help="Dataset split")
     parser.add_argument("--start", type=int, default=0, help="Start point in dataset")
     parser.add_argument("--num", type=int, default=1000, help="Number of examples (use 0 or -1 for all examples in split)")
@@ -299,12 +300,6 @@ def main():
         print(f"Failed to load with {args.dtype}, falling back to default: {e}")
         llm = AutoModelForCausalLM.from_pretrained(args.model).to(device).eval()
     
-    # # Compile model for faster inference (PyTorch 2.0+)
-    # try:
-    #     llm = torch.compile(llm)
-    #     print("Model compiled successfully")
-    # except Exception as e:
-    #     print(f"Could not compile model: {e}")
     
     llm_tokenizer = AutoTokenizer.from_pretrained(args.model)
     if llm_tokenizer.pad_token is None:

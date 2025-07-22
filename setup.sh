@@ -122,6 +122,15 @@ echo -e "${YELLOW}📦 Installing project dependencies...${NC}"
 poetry install
 echo -e "${GREEN}✅ Project dependencies installed${NC}"
 
+# Step 6b: Install flash-attn for optimized attention (requires CUDA)
+echo -e "${YELLOW}⚡ Installing flash-attn for faster inference...${NC}"
+if poetry run pip install flash-attn --no-build-isolation >/dev/null 2>&1; then
+    echo -e "${GREEN}✅ flash-attn installed successfully${NC}"
+else
+    echo -e "${YELLOW}⚠️  flash-attn installation failed (this is optional)${NC}"
+    echo "  This is normal on some systems - the script will continue"
+fi
+
 # Step 7: Create helpful aliases and environment setup
 echo -e "${YELLOW}⚙️  Setting up environment...${NC}"
 

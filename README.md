@@ -26,6 +26,7 @@ See [`QUICKSTART.md`](QUICKSTART.md) for detailed setup instructions and usage e
 - ✅ Automated Linux server setup
 - ✅ Poetry-based dependency management with CUDA support
 - ✅ PyTorch with CUDA 12.8 optimized for ML training
+- ✅ Flash Attention 2 for optimized inference (auto-installed)
 - ✅ Multiple training methods (InfoNCE variants)
 - ✅ Google Drive data integration
 - ✅ Weights & Biases monitoring

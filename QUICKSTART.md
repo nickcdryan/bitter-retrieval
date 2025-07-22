@@ -35,13 +35,17 @@ poetry source add --priority=explicit pytorch https://download.pytorch.org/whl/c
 
 # Install dependencies
 poetry install
+
+# Optional: Install Flash Attention 2 for faster inference
+poetry add psutil
+poetry run pip install flash-attn --no-build-isolation
 ```
 
 ### 3. Setup API Keys
 ```bash
 poetry run python setup_env.py
 ```
-This will guide you through setting up your Hugging Face and Weights & Biases API keys.
+This will guide you through setting up your Hugging Face, Github, and Weights & Biases API keys (optional).
 
 ### 4. Verify Setup
 ```bash

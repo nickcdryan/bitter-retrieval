@@ -113,7 +113,9 @@ def run_training_experiment(config: dict) -> dict:
             config, 
             train_data, 
             encoder_tokenizer,
-            wandb_logger=wandb_logger
+            wandb_logger=wandb_logger,
+            llm_model=llm_model,
+            llm_tokenizer=llm_tokenizer
         )
         
         logger.info("Training completed successfully")

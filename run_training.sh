@@ -104,6 +104,9 @@ echo ""
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 RUN_NAME="${METHOD}_${TIMESTAMP}"
 
+# Set wandb entity for proper logging
+export WANDB_ENTITY="nickcdryan"
+
 # Run training with nice defaults
 poetry run python -m src.bitter_retrieval.train \
     --method "$METHOD" \

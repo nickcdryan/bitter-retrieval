@@ -31,19 +31,19 @@ def precompute_squad_embeddings(corpus_texts: List[str], model: AutoModel, token
     return torch.cat(embeddings, dim=0).cuda()
 
 
-def run_squad_validation(model: AutoModel, tokenizer: AutoTokenizer, config: Dict[str, Any], wandb_logger, train_step: int):
+def run_squad_validation(model: AutoModel, tokenizer: AutoTokenizer, config: Dict[str, Any], wandb_logger, train_step: int, llm_model=None, llm_tokenizer=None):
     """Run SQuAD validation and log results."""
     try:
-        # Load SQuAD data if not already loaded (simplified approach)  
+        # Load SQuAD data if not already loaded
         squad_qa_data, squad_corpus, _ = load_squad_data(config)
         
         # Precompute embeddings
         squad_embeddings = precompute_squad_embeddings(squad_corpus, model, tokenizer)
         
-        # Simplified evaluation without full evaluator class
+        # Full evaluation with all metrics
         num_eval_examples = min(100, len(squad_qa_data))
-        squad_results = evaluate_squad_simple(
-            model, tokenizer, squad_qa_data[:num_eval_examples], squad_embeddings, squad_corpus
+        squad_results = evaluate_squad_full(
+            model, tokenizer, squad_qa_data[:num_eval_examples], squad_embeddings, squad_corpus, llm_model, llm_tokenizer
         )
         
         logger.info(f"SQuAD validation results: {squad_results}")
@@ -67,34 +67,126 @@ def run_squad_validation(model: AutoModel, tokenizer: AutoTokenizer, config: Dic
         return None
 
 
-def evaluate_squad_simple(model: AutoModel, tokenizer: AutoTokenizer, qa_data: List[Dict], 
-                         corpus_embeddings: torch.Tensor, corpus_texts: List[str]) -> Dict[str, float]:
-    """Simplified SQuAD evaluation for validation during training."""
-    model.eval()
-    retrieval_hits = []
-    
+def generate_answer(query: str, context: str, llm_model, llm_tokenizer, max_tokens: int = 40, device=None) -> str:
+    """Generate answer autoregressively with stopping criteria."""
+    if device is None:
+        device = next(llm_model.parameters()).device
+        
+    prompt = f"Question: {query} Context: {context} Answer:"
+    inputs = llm_tokenizer(prompt, return_tensors="pt", truncation=True, max_length=900).to(device)
+    prompt_length = inputs["input_ids"].shape[1]
+
     with torch.no_grad():
-        for item in tqdm(qa_data, desc="SQuAD validation"):
+        outputs = llm_model.generate(
+            inputs["input_ids"],
+            attention_mask=inputs["attention_mask"],
+            max_new_tokens=max_tokens,
+            do_sample=False,
+            pad_token_id=llm_tokenizer.eos_token_id,
+            eos_token_id=llm_tokenizer.eos_token_id
+        )
+
+    generated_tokens = outputs[0, prompt_length:]
+    generated_text = llm_tokenizer.decode(generated_tokens, skip_special_tokens=True)
+    return generated_text.strip()
+
+
+def compute_f1(prediction: str, reference: str) -> float:
+    """Compute token-level F1 score."""
+    from collections import Counter
+    pred_tokens = prediction.lower().split()
+    ref_tokens = reference.lower().split()
+
+    if len(pred_tokens) == 0 and len(ref_tokens) == 0:
+        return 1.0
+    if len(pred_tokens) == 0 or len(ref_tokens) == 0:
+        return 0.0
+
+    pred_counter = Counter(pred_tokens)
+    ref_counter = Counter(ref_tokens)
+    overlap = pred_counter & ref_counter
+    overlap_count = sum(overlap.values())
+
+    precision = overlap_count / len(pred_tokens)
+    recall = overlap_count / len(ref_tokens)
+
+    if precision + recall == 0:
+        return 0.0
+
+    return 2 * precision * recall / (precision + recall)
+
+
+def compute_exact_match(prediction: str, reference: str) -> float:
+    """Compute exact match score."""
+    return float(prediction.lower().strip() == reference.lower().strip())
+
+
+def evaluate_squad_full(model: AutoModel, tokenizer: AutoTokenizer, qa_data: List[Dict], 
+                       corpus_embeddings: torch.Tensor, corpus_texts: List[str], 
+                       llm_model=None, llm_tokenizer=None) -> Dict[str, float]:
+    """Full SQuAD evaluation with all metrics, matching the working code exactly."""
+    model.eval()
+    retrieval_hits = []  # Did we retrieve the correct context?
+    llm_losses = []
+    exact_matches = []
+    f1_scores = []
+    
+    device = next(model.parameters()).device
+
+    with torch.no_grad():
+        for item in tqdm(qa_data, desc="SQuAD evaluation"):
             if item.get("answer") == "Unanswerable":
                 continue
 
             question = item["question"]
+            correct_answer = item["answer"]
             correct_context_idx = item["context_idx"]
 
             # Encode question and retrieve top context
             question_emb = encode_texts([f"query: {question}"], model, tokenizer)
             similarities = torch.matmul(question_emb, corpus_embeddings.T).squeeze(0)
             best_context_idx = similarities.argmax().item()
+            best_context = corpus_texts[best_context_idx]
 
             # Check if we retrieved the correct context
             retrieval_hit = (best_context_idx == correct_context_idx)
             retrieval_hits.append(retrieval_hit)
 
+            # Compute LLM loss with retrieved context (if LLM is available)
+            if llm_model is not None and llm_tokenizer is not None:
+                input_text = f"Question: {question} Context: {best_context} Answer: {correct_answer}"
+                inputs = llm_tokenizer(input_text, return_tensors="pt", truncation=True, max_length=1024).to(device)
+                labels = inputs["input_ids"].clone()
+
+                target_start_idx = input_text.rfind("Answer: ") + len("Answer: ")
+                target_start_token_idx = llm_tokenizer(input_text[:target_start_idx], return_tensors="pt")["input_ids"].shape[1] - 1
+                labels[:, :target_start_token_idx] = -100
+                labels[labels == llm_tokenizer.pad_token_id] = -100
+
+                outputs = llm_model(**inputs)
+                logits = outputs.logits[0, :-1, :].contiguous()
+                labels = labels[0, 1:].contiguous()
+                valid_positions = labels != -100
+
+                if valid_positions.sum() > 0:
+                    loss = F.cross_entropy(logits[valid_positions], labels[valid_positions])
+                    llm_losses.append(loss.item())
+
+                # Generate answer and compute EM/F1
+                try:
+                    generated_answer = generate_answer(question, best_context, llm_model, llm_tokenizer, device=device)
+                    em = compute_exact_match(generated_answer, correct_answer)
+                    f1 = compute_f1(generated_answer, correct_answer)
+                    exact_matches.append(em)
+                    f1_scores.append(f1)
+                except:
+                    continue
+
     return {
-        "Retrieval_Accuracy": float(torch.tensor(retrieval_hits).float().mean()),
-        "LLM_Loss": 0.0,  # Simplified - skip LLM loss computation for speed
-        "Exact_Match": 0.0,  # Simplified - skip generation for speed
-        "F1_Score": 0.0,  # Simplified - skip generation for speed
+        "Retrieval_Accuracy": float(torch.tensor(retrieval_hits).float().mean()) if retrieval_hits else 0.0,
+        "LLM_Loss": float(torch.tensor(llm_losses).mean()) if llm_losses else 0.0,
+        "Exact_Match": float(torch.tensor(exact_matches).mean()) if exact_matches else 0.0,
+        "F1_Score": float(torch.tensor(f1_scores).mean()) if f1_scores else 0.0,
         "Num_Examples": len(retrieval_hits)
     }
 
@@ -129,7 +221,9 @@ def train_standard_infonce(
     train_data: List[Dict[str, Any]],
     encoder_tokenizer: AutoTokenizer,
     evaluator=None,
-    wandb_logger=None
+    wandb_logger=None,
+    llm_model=None,
+    llm_tokenizer=None
 ) -> AutoModel:
     """Train model using standard InfoNCE with original hard labels."""
     logger.info("Training Standard InfoNCE on original labels")
@@ -191,7 +285,7 @@ def train_standard_infonce(
 
                 # Periodic validation
                 if train_step % config.get("eval_steps", 750) == 0:
-                    run_squad_validation(model, encoder_tokenizer, config, wandb_logger, train_step)
+                    run_squad_validation(model, encoder_tokenizer, config, wandb_logger, train_step, llm_model, llm_tokenizer)
 
                 # Backward pass
                 optimizer.zero_grad()
@@ -215,7 +309,9 @@ def train_converted_infonce(
     train_data: List[Dict[str, Any]],
     encoder_tokenizer: AutoTokenizer,
     evaluator=None,
-    wandb_logger=None
+    wandb_logger=None,
+    llm_model=None,
+    llm_tokenizer=None
 ) -> AutoModel:
     """Train model using InfoNCE with converted soft-to-hard labels."""
     logger.info("Training Converted InfoNCE on LLM-converted labels")
@@ -280,7 +376,7 @@ def train_converted_infonce(
 
                 # Periodic validation
                 if train_step % config.get("eval_steps", 750) == 0:
-                    run_squad_validation(model, encoder_tokenizer, config, wandb_logger, train_step)
+                    run_squad_validation(model, encoder_tokenizer, config, wandb_logger, train_step, llm_model, llm_tokenizer)
 
                 # Backward pass
                 optimizer.zero_grad()
@@ -304,7 +400,9 @@ def train_kl_soft_infonce(
     train_data: List[Dict[str, Any]],
     encoder_tokenizer: AutoTokenizer,
     evaluator=None,
-    wandb_logger=None
+    wandb_logger=None,
+    llm_model=None,
+    llm_tokenizer=None
 ) -> AutoModel:
     """Train model using KL divergence with soft LLM loss distributions."""
     logger.info("Training KL Soft InfoNCE with LLM loss distributions")
@@ -367,7 +465,7 @@ def train_kl_soft_infonce(
 
                 # Periodic validation
                 if train_step % config.get("eval_steps", 750) == 0:
-                    run_squad_validation(model, encoder_tokenizer, config, wandb_logger, train_step)
+                    run_squad_validation(model, encoder_tokenizer, config, wandb_logger, train_step, llm_model, llm_tokenizer)
 
                 # Backward pass
                 optimizer.zero_grad()
@@ -391,17 +489,19 @@ def train_model(
     train_data: List[Dict[str, Any]],
     encoder_tokenizer: AutoTokenizer,
     evaluator=None,
-    wandb_logger=None
+    wandb_logger=None,
+    llm_model=None,
+    llm_tokenizer=None
 ) -> AutoModel:
     """Train model using the specified method."""
     method = config["method"]
     
     if method == "standard_infonce":
-        return train_standard_infonce(config, train_data, encoder_tokenizer, evaluator, wandb_logger)
+        return train_standard_infonce(config, train_data, encoder_tokenizer, evaluator, wandb_logger, llm_model, llm_tokenizer)
     elif method == "converted_infonce":
-        return train_converted_infonce(config, train_data, encoder_tokenizer, evaluator, wandb_logger)
+        return train_converted_infonce(config, train_data, encoder_tokenizer, evaluator, wandb_logger, llm_model, llm_tokenizer)
     elif method == "kl_soft_infonce":
-        return train_kl_soft_infonce(config, train_data, encoder_tokenizer, evaluator, wandb_logger)
+        return train_kl_soft_infonce(config, train_data, encoder_tokenizer, evaluator, wandb_logger, llm_model, llm_tokenizer)
     else:
         raise ValueError(f"Unknown training method: {method}")
 

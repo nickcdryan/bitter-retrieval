@@ -13,6 +13,9 @@ import numpy as np
 import os
 from collections import defaultdict, Counter
 import wandb
+import asyncio
+import aiohttp
+from concurrent.futures import ThreadPoolExecutor
 
 # Load environment variables from .env file
 try:
@@ -31,7 +34,7 @@ def get_config():
         "encoder_model": "google-bert/bert-base-uncased", #"nomic-ai/nomic-embed-text-v1-unsupervised",
         
         # Max lengths
-        "encode_max_length": 1024,
+        "encode_max_length": 512,  # BERT base max sequence length 512
         "llm_max_length": 1024,
         "generation_max_length": 900,
         "generation_max_tokens": 40,
@@ -39,9 +42,9 @@ def get_config():
         # Training params
         "batch_size": 32,
         "learning_rate": 2e-5,
-        "num_epochs": 1,  # Just 1 epoch for testing
+        "num_epochs": 2,  # Just 1 epoch for testing
         "warmup_steps": 100,  # Fewer warmup steps
-        "validation_frequency": 500,  # Validate more frequently
+        "validation_frequency": 100,  # Validate more frequently
         
         # Training method and params
         "training_method": "standard_infonce",  # "standard_infonce", "converted_infonce", "kl_soft_infonce"
@@ -52,18 +55,20 @@ def get_config():
         
         # Data params
         "dataset_name": "nickcdryan/ms_marco_softlabel_Qwen3-8B-Base_bf16",
-        "num_data_examples": 5000,  # Small test size
+        "num_data_examples": -1,  # Set to None or -1 to use all available training examples
+
         # build our corpus, including every single passages belonging to each squad_num_titles to make retrieval harder
-        "squad_num_titles": 20,     # number of unique articles (with a number of questions and contexts per article)
+        # end up with squad_questions_per_title * squad_num_titles total questions, and corpus is about 45 * squad_num_titles passages
+        "squad_num_titles": 150,     # number of unique articles (with a number of questions and contexts per article)
         "squad_questions_per_title": 5, # how many questions associated with each article
-        "squad_eval_examples": 50, # Small validation sets
-        "squad_test_examples": 50,
-        "msmarco_val_examples": 50,
-        "msmarco_test_examples": 50,
+        "squad_eval_examples": 100, # Small validation sets
+        "squad_test_examples": 500,
+        "msmarco_val_examples": 100,
+        "msmarco_test_examples": 500,
         
         # Logging
         "wandb_project": "bitter-retrieval",
-        "run_name": "standard_infonce-BERT_dataset-100ks",
+        "run_name": "standard_infonce-BERT-fulltraining-epoch:1-batch:32",
         
         # Model saving
         "save_model": True,
@@ -362,6 +367,94 @@ Answer with only "YES" or "NO":"""
         return 0.0
 
 
+async def llm_judge_answer_async(question, reference_answer, generated_answer):
+    """Async version of LLM judge for batch processing"""
+    prompt = f"""Question: {question}
+Reference Answer: {reference_answer}
+Generated Answer: {generated_answer}
+
+Does the Generated Answer correctly answer the question in the same way as the Reference Answer? Consider the answers equivalent if they convey the same core information, even if worded differently. The question is provided for additional context.
+
+Answer with only "YES" or "NO":"""
+
+    system_instruction = "You are an expert evaluator. Compare answers for semantic equivalence and respond with only YES or NO."
+    
+    try:
+        response = await call_llm_async(prompt, system_instruction)
+        response = response.strip().upper()
+        
+        # Parse response - look for YES/NO
+        if "YES" in response:
+            return 1.0
+        elif "NO" in response:
+            return 0.0
+        else:
+            return 0.0
+    except Exception as e:
+        print(f"Async LLM judge error: {e}")
+        return 0.0
+
+
+async def call_llm_async(prompt, system_instruction=None):
+    """Async version of call_llm for parallel API calls"""
+    import google.generativeai as genai
+    
+    # Configure the API
+    genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+    
+    # Create the model
+    model = genai.GenerativeModel("gemini-2.0-flash")
+    
+    # Combine system instruction with prompt if provided
+    if system_instruction:
+        full_prompt = f"{system_instruction}\n\n{prompt}"
+    else:
+        full_prompt = prompt
+    
+    # Use asyncio to run the sync function in thread pool
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor() as executor:
+        response = await loop.run_in_executor(executor, model.generate_content, full_prompt)
+        return response.text
+
+
+async def batch_llm_judge(judge_tasks):
+    """Process multiple LLM judge tasks in parallel"""
+    results = await asyncio.gather(*judge_tasks, return_exceptions=True)
+    return [r if not isinstance(r, Exception) else 0.0 for r in results]
+
+
+def generate_answers_batch(question_context_pairs, llm, llm_tokenizer, max_length=900, max_tokens=40, batch_size=8):
+    """Generate answers for multiple question-context pairs in batches"""
+    all_answers = []
+    
+    for i in range(0, len(question_context_pairs), batch_size):
+        batch_pairs = question_context_pairs[i:i + batch_size]
+        batch_prompts = [f"Question: {q} Context: {c} Answer:" for q, c in batch_pairs]
+        
+        # Batch tokenize
+        inputs = llm_tokenizer(batch_prompts, return_tensors="pt", padding=True, truncation=True, max_length=max_length).to(device)
+        prompt_lengths = [len(llm_tokenizer.encode(prompt)) for prompt in batch_prompts]
+        
+        with torch.no_grad():
+            outputs = llm.generate(
+                inputs["input_ids"],
+                attention_mask=inputs["attention_mask"],
+                max_new_tokens=max_tokens,
+                do_sample=False,
+                pad_token_id=llm_tokenizer.eos_token_id,
+                eos_token_id=llm_tokenizer.eos_token_id
+            )
+        
+        # Decode each answer
+        for j, (output, prompt_length) in enumerate(zip(outputs, prompt_lengths)):
+            generated_tokens = output[prompt_length:]
+            generated_text = llm_tokenizer.decode(generated_tokens, skip_special_tokens=True)
+            all_answers.append(generated_text.strip())
+    
+    return all_answers
+
+
 def save_model(model, config):
     """Save trained model"""
     if not config["save_model"]:
@@ -400,7 +493,7 @@ def evaluate_squad(model, qa_data, corpus_embeddings, squad_corpus, llm, llm_tok
     llm_judge_scores = []
     
     with torch.no_grad():
-        for item in tqdm(qa_data[:num_examples], desc="SQuAD evaluation"):
+        for item in tqdm(qa_data[:num_examples], desc="Evaluation"):
             if item["answer"] == "Unanswerable":
                 continue
             
@@ -808,8 +901,12 @@ def main():
     ms_marco_dataset = load_dataset(config["dataset_name"])
     soft_train_data_full = list(ms_marco_dataset["train"])
     
-    soft_train_data = soft_train_data_full[:config["num_data_examples"]]
-    print(f"Using {len(soft_train_data)} training examples")
+    if config["num_data_examples"] is None or config["num_data_examples"] == -1:
+        soft_train_data = soft_train_data_full
+        print(f"Using all {len(soft_train_data)} training examples")
+    else:
+        soft_train_data = soft_train_data_full[:config["num_data_examples"]]
+        print(f"Using {len(soft_train_data)} training examples")
     
     # Prepare MS MARCO validation data
     msmarco_qa_data, msmarco_corpus = preprocess_msmarco_validation(config, config["msmarco_val_examples"])

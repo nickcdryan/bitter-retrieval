@@ -43,8 +43,8 @@ def get_config():
         "batch_size": 32,
         "learning_rate": 2e-5,
         "num_epochs": 2,  # Just 1 epoch for testing
-        "warmup_steps": 100,  # Fewer warmup steps
-        "validation_frequency": 100,  # Validate more frequently
+        "warmup_steps": 200,  # Fewer warmup steps
+        "validation_frequency": 500,  # Validate more frequently
         
         # Training method and params
         "training_method": "standard_infonce",  # "standard_infonce", "converted_infonce", "kl_soft_infonce"
@@ -79,7 +79,7 @@ def get_config():
         
         # Logging
         "wandb_project": "bitter-retrieval",
-        "run_name": "standard_infonce-BERT-fulltraining-epoch:1-batch:32",
+        "run_name": "standard_infonce-BERT-fulltraining-epoch:2-batch:32",
         
         # Model saving
         "save_model": True,
@@ -103,7 +103,7 @@ def setup_device_and_models(config):
     
     bert_tokenizer = AutoTokenizer.from_pretrained(config["encoder_model"], trust_remote_code=True)
     
-    llm = AutoModelForCausalLM.from_pretrained(config["llm_model"]).to(device).eval()
+    llm = AutoModelForCausalLM.from_pretrained(config["llm_model"]).eval()  # Keep on CPU
     llm_tokenizer = AutoTokenizer.from_pretrained(config["llm_model"])
     
     if llm_tokenizer.pad_token is None:
@@ -631,13 +631,21 @@ def validation_loop_msmarco(model, msmarco_qa_data, msmarco_corpus, llm, llm_tok
 
 def run_all_validation(model, squad_qa_data, squad_corpus, msmarco_qa_data, msmarco_corpus, llm, llm_tokenizer, bert_tokenizer, config):
     """Run both SQuAD and MS MARCO validation"""
-    squad_results = validation_loop_squad(model, squad_qa_data, squad_corpus, llm, llm_tokenizer, bert_tokenizer, config)
-    msmarco_results = validation_loop_msmarco(model, msmarco_qa_data, msmarco_corpus, llm, llm_tokenizer, bert_tokenizer, config)
+    # Move LLM to GPU for validation
+    llm.to(device)
     
-    return {
-        "squad": squad_results,
-        "msmarco": msmarco_results
-    }
+    try:
+        squad_results = validation_loop_squad(model, squad_qa_data, squad_corpus, llm, llm_tokenizer, bert_tokenizer, config)
+        msmarco_results = validation_loop_msmarco(model, msmarco_qa_data, msmarco_corpus, llm, llm_tokenizer, bert_tokenizer, config)
+        
+        return {
+            "squad": squad_results,
+            "msmarco": msmarco_results
+        }
+    finally:
+        # Move LLM back to CPU and clear cache
+        llm.cpu()
+        torch.cuda.empty_cache()
 
 
 def train_standard_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarco_qa_data, msmarco_corpus, llm, llm_tokenizer, bert_tokenizer, config):

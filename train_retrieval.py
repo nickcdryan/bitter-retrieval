@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+# poetry run python train_retrieval.py
+
 import torch
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
@@ -25,21 +27,21 @@ def get_config():
     """Training configuration"""
     return {
         # Models
-        "llm_model": "Qwen/Qwen3-8B-Base",
-        "encoder_model": "nomic-ai/nomic-embed-text-v1-unsupervised",
+        "llm_model": "Qwen/Qwen3-8B-Base", 
+        "encoder_model": "google-bert/bert-base-uncased", #"nomic-ai/nomic-embed-text-v1-unsupervised",
         
         # Max lengths
-        "encode_max_length": 512,
+        "encode_max_length": 1024,
         "llm_max_length": 1024,
         "generation_max_length": 900,
         "generation_max_tokens": 40,
         
         # Training params
-        "batch_size": 8,
+        "batch_size": 32,
         "learning_rate": 2e-5,
         "num_epochs": 1,  # Just 1 epoch for testing
-        "warmup_steps": 10,  # Fewer warmup steps
-        "validation_frequency": 20,  # Validate more frequently
+        "warmup_steps": 100,  # Fewer warmup steps
+        "validation_frequency": 500,  # Validate more frequently
         
         # Training method and params
         "training_method": "standard_infonce",  # "standard_infonce", "converted_infonce", "kl_soft_infonce"
@@ -50,17 +52,18 @@ def get_config():
         
         # Data params
         "dataset_name": "nickcdryan/ms_marco_softlabel_Qwen3-8B-Base_bf16",
-        "num_data_examples": 1000,  # Small test size
-        "squad_num_titles": 5,     # Fewer titles for testing
-        "squad_questions_per_title": 2,
-        "squad_eval_examples": 10, # Small validation sets
-        "squad_test_examples": 20,
-        "msmarco_val_examples": 10,
-        "msmarco_test_examples": 10,
+        "num_data_examples": 5000,  # Small test size
+        # build our corpus, including every single passages belonging to each squad_num_titles to make retrieval harder
+        "squad_num_titles": 20,     # number of unique articles (with a number of questions and contexts per article)
+        "squad_questions_per_title": 5, # how many questions associated with each article
+        "squad_eval_examples": 50, # Small validation sets
+        "squad_test_examples": 50,
+        "msmarco_val_examples": 50,
+        "msmarco_test_examples": 50,
         
         # Logging
         "wandb_project": "bitter-retrieval",
-        "run_name": "TEST_RUN-standard_infonce-NOMIC-HF_dataset-100examples",
+        "run_name": "standard_infonce-BERT_dataset-100ks",
         
         # Model saving
         "save_model": True,
@@ -836,7 +839,28 @@ def main():
     squad_embeddings = precompute_squad_embeddings(squad_corpus, model, bert_tokenizer, config)
     squad_results = evaluate_squad(model, squad_test_set, squad_embeddings, squad_corpus, llm, llm_tokenizer, bert_tokenizer, config)
     
-    print("Final results:", squad_results)
+    # MS MARCO final evaluation
+    msmarco_test_qa_data, msmarco_test_corpus = preprocess_msmarco_validation(config, config["msmarco_test_examples"])
+    msmarco_embeddings = precompute_squad_embeddings(msmarco_test_corpus, model, bert_tokenizer, config)
+    msmarco_results = evaluate_squad(model, msmarco_test_qa_data, msmarco_embeddings, msmarco_test_corpus, llm, llm_tokenizer, bert_tokenizer, config)
+    
+    # Log final results
+    final_results = {
+        "Final_SQuAD_F1": squad_results['F1_Score'],
+        "Final_SQuAD_EM": squad_results['Exact_Match'],
+        "Final_SQuAD_Retrieval": squad_results['Retrieval_Accuracy'],
+        "Final_SQuAD_LLM_Loss": squad_results['LLM_Loss'],
+        "Final_SQuAD_LLM_Judge": squad_results['LLM_Judge'],
+        "Final_MSMARCO_F1": msmarco_results['F1_Score'],
+        "Final_MSMARCO_EM": msmarco_results['Exact_Match'],
+        "Final_MSMARCO_Retrieval": msmarco_results['Retrieval_Accuracy'],
+        "Final_MSMARCO_LLM_Loss": msmarco_results['LLM_Loss'],
+        "Final_MSMARCO_LLM_Judge": msmarco_results['LLM_Judge'],
+    }
+    wandb.log(final_results)
+    
+    print("Final SQuAD results:", squad_results)
+    print("Final MS MARCO results:", msmarco_results)
     
     # Cleanup
     del model, squad_embeddings

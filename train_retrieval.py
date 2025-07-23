@@ -16,7 +16,6 @@ import wandb
 import asyncio
 import aiohttp
 from concurrent.futures import ThreadPoolExecutor
-import time
 
 # Load environment variables from .env file
 try:
@@ -662,28 +661,11 @@ def train_standard_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarco
     for epoch in range(config["num_epochs"]):
         model.train()
         total_loss = 0
-        epoch_start = time.time()
         
         for i in tqdm(range(0, len(soft_train_data), config["batch_size"]), desc=f"Epoch {epoch+1}"):
-            batch_start = time.time()
-            
-            # TIMING: Data loading/processing
-            data_start = time.time()
             batch_items = soft_train_data[i:i+config["batch_size"]]
             batch_loss = 0
             valid_items = 0
-            data_time = time.time() - data_start
-            
-            # Initialize variables for case where no valid items
-            all_queries = []
-            all_pos_passages = []
-            all_neg_passages = []
-            prep_time = 0.0
-            encode_time = 0.0
-            loss_time = 0.0
-            
-            # TIMING: Data preparation for batching
-            prep_start = time.time()
             
             # Filter valid items and collect data for batching
             valid_batch_items = [item for item in batch_items if not should_skip_item(item)]
@@ -721,20 +703,15 @@ def train_standard_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarco
                     'neg_count': len(neg_passages_for_item)
                 })
             
-            prep_time = time.time() - prep_start
-            
             if valid_items == 0:
                 continue
             
-            # TIMING: Batch encoding
-            encode_start = time.time()
+            # Batch encoding
             query_embs = encode_texts(all_queries, model, bert_tokenizer, config["encode_max_length"]).to(device)
             pos_embs = encode_texts(all_pos_passages, model, bert_tokenizer, config["encode_max_length"]).to(device)
             neg_embs = encode_texts(all_neg_passages, model, bert_tokenizer, config["encode_max_length"]).to(device)
-            encode_time = time.time() - encode_start
             
-            # TIMING: Loss computation
-            loss_start = time.time()
+            # Loss computation
             batch_loss = 0
             
             for i, metadata in enumerate(item_metadata):
@@ -759,13 +736,8 @@ def train_standard_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarco
                 
                 batch_loss += loss
             
-            loss_time = time.time() - loss_start
-            item_loop_time = prep_time + encode_time + loss_time
-            
             wandb.log({"Contrastive loss": batch_loss}, step=train_step)
             
-            # TIMING: Validation
-            val_start = time.time()
             if train_step % config["validation_frequency"] == 0:
                 model.eval()
                 val_results = run_all_validation(model, squad_qa_data, squad_corpus, msmarco_qa_data, msmarco_corpus, llm, llm_tokenizer, bert_tokenizer, config)
@@ -785,36 +757,15 @@ def train_standard_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarco
                     "MSMARCO LLM_Judge": val_results['msmarco']['LLM_Judge'],
                 }
                 wandb.log(val_metrics, step=train_step)
-            val_time = time.time() - val_start
             
-            # TIMING: Backward pass
-            backward_start = time.time()
             if batch_loss > 0:
                 optimizer.zero_grad()
                 batch_loss.backward()
                 optimizer.step()
                 scheduler.step()
                 total_loss += batch_loss.item()
-            backward_time = time.time() - backward_start
-            
-            batch_total_time = time.time() - batch_start
-            
-            # Print timing every 10 steps
-            if train_step % 10 == 0:
-                total_passages = (len(all_neg_passages) + len(all_pos_passages)) if valid_items > 0 else 0
-                num_queries = len(all_queries) if valid_items > 0 else 0
-                
-                print(f"TIMING Step {train_step}: Total={batch_total_time:.2f}s | "
-                      f"Data={data_time:.3f}s | Prep={prep_time:.3f}s | "
-                      f"BatchEncode={encode_time:.2f}s | Loss={loss_time:.2f}s | "
-                      f"Validation={val_time:.2f}s | Backward={backward_time:.3f}s | "
-                      f"ValidItems={valid_items} | Queries={num_queries} | "
-                      f"Passages={total_passages}")
             
             train_step += 1
-        
-        epoch_time = time.time() - epoch_start
-        print(f"🕐 EPOCH {epoch+1} TOTAL TIME: {epoch_time:.1f}s ({epoch_time/60:.1f}min)")
         
         print(f"Epoch {epoch+1} Loss: {total_loss:.4f}")
         print("VALIDATION", validation_results)
@@ -937,13 +888,8 @@ def train_kl_soft_infonce_batched(soft_train_data, squad_qa_data, squad_corpus, 
     for epoch in range(config["num_epochs"]):
         model.train()
         total_loss = 0
-        epoch_start = time.time()
         
         for i in tqdm(range(0, len(soft_train_data), config["batch_size"]), desc=f"Epoch {epoch+1}"):
-            batch_start = time.time()
-            
-            # TIMING: Data preprocessing
-            prep_start = time.time()
             batch_items = soft_train_data[i:i+config["batch_size"]]
             batch_items = [item for item in batch_items if not should_skip_item(item)]
             if len(batch_items) == 0:
@@ -963,17 +909,11 @@ def train_kl_soft_infonce_batched(soft_train_data, squad_qa_data, squad_corpus, 
                 passages.extend([f"passage: {p}" for p in p_list])
                 soft_label_groups.append(torch.tensor(l_list, dtype=torch.float32, device=device))
                 passage_counts.append(len(p_list))
-            prep_time = time.time() - prep_start
             
-            # TIMING: Batch encoding  
-            encode_start = time.time()
             query_embs = encode_texts(queries, model, bert_tokenizer, config["encode_max_length"]).to(device)
             passage_embs = encode_texts(passages, model, bert_tokenizer, config["encode_max_length"]).to(device)
             passage_emb_groups = torch.split(passage_embs, passage_counts, dim=0)
-            encode_time = time.time() - encode_start
             
-            # TIMING: Loss computation
-            loss_start = time.time()
             batch_loss = 0
             for q_emb, p_embs, soft_labels in zip(query_embs, passage_emb_groups, soft_label_groups):
                 similarities = F.cosine_similarity(q_emb.unsqueeze(0), p_embs, dim=1)
@@ -994,12 +934,9 @@ def train_kl_soft_infonce_batched(soft_train_data, squad_qa_data, squad_corpus, 
                 batch_loss += loss
             
             batch_loss = batch_loss / len(batch_items)
-            loss_time = time.time() - loss_start
             
             wandb.log({"KL loss": batch_loss}, step=train_step)
             
-            # TIMING: Validation
-            val_start = time.time()
             if train_step % config["validation_frequency"] == 0:
                 model.eval()
                 val_results = run_all_validation(model, squad_qa_data, squad_corpus, msmarco_qa_data, msmarco_corpus, llm, llm_tokenizer, bert_tokenizer, config)
@@ -1019,31 +956,14 @@ def train_kl_soft_infonce_batched(soft_train_data, squad_qa_data, squad_corpus, 
                     "MSMARCO LLM_Judge": val_results['msmarco']['LLM_Judge'],
                 }
                 wandb.log(val_metrics, step=train_step)
-            val_time = time.time() - val_start
             
-            # TIMING: Backward pass
-            backward_start = time.time()
             optimizer.zero_grad()
             batch_loss.backward()
             optimizer.step()
             scheduler.step()
-            backward_time = time.time() - backward_start
             
             total_loss += batch_loss.item()
-            batch_total_time = time.time() - batch_start
-            
-            # Print timing every 10 steps for KL method
-            if train_step % 10 == 0:
-                print(f"TIMING KL Step {train_step}: Total={batch_total_time:.2f}s | "
-                      f"DataPrep={prep_time:.3f}s | BatchEncode={encode_time:.2f}s | "
-                      f"Loss={loss_time:.2f}s | Validation={val_time:.2f}s | "
-                      f"Backward={backward_time:.3f}s | Items={len(batch_items)} | "
-                      f"Queries={len(queries)} | Passages={len(passages)}")
-            
             train_step += 1
-        
-        epoch_time = time.time() - epoch_start
-        print(f"🕐 KL EPOCH {epoch+1} TOTAL TIME: {epoch_time:.1f}s ({epoch_time/60:.1f}min)")
         
         print(f"Epoch {epoch+1} total loss: {total_loss:.4f}")
         print("VALIDATION", validation_results)

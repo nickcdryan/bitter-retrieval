@@ -59,23 +59,23 @@ def get_config():
 
         # build our corpus, including every single passages belonging to each squad_num_titles to make retrieval harder
         # end up with squad_questions_per_title * squad_num_titles total questions, and corpus is about 45 * squad_num_titles passages
-        # "squad_num_titles": 150,     # number of unique articles (with a number of questions and contexts per article)
-        # "squad_questions_per_title": 5, # how many questions associated with each article
-        # "squad_eval_examples": 100, # Small validation sets
-        # "squad_test_examples": 500,
-        # "msmarco_val_examples": 100,
-        # "msmarco_test_examples": 500,
+        "squad_num_titles": 150,     # number of unique articles (with a number of questions and contexts per article)
+        "squad_questions_per_title": 5, # how many questions associated with each article
+        "squad_eval_examples": 100, # Small validation sets
+        "squad_test_examples": 500,
+        "msmarco_val_examples": 100,
+        "msmarco_test_examples": 500,
 
 
         # LITE!
         # build our corpus, including every single passages belonging to each squad_num_titles to make retrieval harder
         # end up with squad_questions_per_title * squad_num_titles total questions, and corpus is about 45 * squad_num_titles passages
-        "squad_num_titles": 10,     # number of unique articles (with a number of questions and contexts per article)
-        "squad_questions_per_title": 5, # how many questions associated with each article
-        "squad_eval_examples": 5, # Small validation sets
-        "squad_test_examples": 5,
-        "msmarco_val_examples": 5,
-        "msmarco_test_examples": 5,
+        # "squad_num_titles": 10,     # number of unique articles (with a number of questions and contexts per article)
+        # "squad_questions_per_title": 5, # how many questions associated with each article
+        # "squad_eval_examples": 5, # Small validation sets
+        # "squad_test_examples": 5,
+        # "msmarco_val_examples": 5,
+        # "msmarco_test_examples": 5,
         
         # Logging
         "wandb_project": "bitter-retrieval",
@@ -744,8 +744,21 @@ def train_standard_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarco
                 
                 batch_loss += loss
             
+            # Normalize by number of valid items
+            if valid_items > 0:
+                batch_loss = batch_loss / valid_items
+            
             wandb.log({"Contrastive loss": batch_loss}, step=train_step)
             
+            # Complete backward pass first to free gradients
+            if batch_loss > 0:
+                optimizer.zero_grad()
+                batch_loss.backward()
+                optimizer.step()
+                scheduler.step()
+                total_loss += batch_loss.item()
+            
+            # Now do validation with freed GPU memory
             if train_step % config["validation_frequency"] == 0:
                 model.eval()
                 val_results = run_all_validation(model, squad_qa_data, squad_corpus, msmarco_qa_data, msmarco_corpus, llm, llm_tokenizer, bert_tokenizer, config)
@@ -765,13 +778,6 @@ def train_standard_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarco
                     "MSMARCO LLM_Judge": val_results['msmarco']['LLM_Judge'],
                 }
                 wandb.log(val_metrics, step=train_step)
-            
-            if batch_loss > 0:
-                optimizer.zero_grad()
-                batch_loss.backward()
-                optimizer.step()
-                scheduler.step()
-                total_loss += batch_loss.item()
             
             train_step += 1
         
@@ -945,6 +951,15 @@ def train_kl_soft_infonce_batched(soft_train_data, squad_qa_data, squad_corpus, 
             
             wandb.log({"KL loss": batch_loss}, step=train_step)
             
+            # Complete backward pass first to free gradients
+            optimizer.zero_grad()
+            batch_loss.backward()
+            optimizer.step()
+            scheduler.step()
+            
+            total_loss += batch_loss.item()
+            
+            # Now do validation with freed GPU memory
             if train_step % config["validation_frequency"] == 0:
                 model.eval()
                 val_results = run_all_validation(model, squad_qa_data, squad_corpus, msmarco_qa_data, msmarco_corpus, llm, llm_tokenizer, bert_tokenizer, config)
@@ -965,12 +980,6 @@ def train_kl_soft_infonce_batched(soft_train_data, squad_qa_data, squad_corpus, 
                 }
                 wandb.log(val_metrics, step=train_step)
             
-            optimizer.zero_grad()
-            batch_loss.backward()
-            optimizer.step()
-            scheduler.step()
-            
-            total_loss += batch_loss.item()
             train_step += 1
         
         print(f"Epoch {epoch+1} total loss: {total_loss:.4f}")

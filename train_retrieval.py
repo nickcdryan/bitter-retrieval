@@ -428,29 +428,38 @@ def generate_answers_batch(question_context_pairs, llm, llm_tokenizer, max_lengt
     """Generate answers for multiple question-context pairs in batches"""
     all_answers = []
     
-    for i in range(0, len(question_context_pairs), batch_size):
-        batch_pairs = question_context_pairs[i:i + batch_size]
-        batch_prompts = [f"Question: {q} Context: {c} Answer:" for q, c in batch_pairs]
-        
-        # Batch tokenize
-        inputs = llm_tokenizer(batch_prompts, return_tensors="pt", padding=True, truncation=True, max_length=max_length).to(device)
-        prompt_lengths = [len(llm_tokenizer.encode(prompt)) for prompt in batch_prompts]
-        
-        with torch.no_grad():
-            outputs = llm.generate(
-                inputs["input_ids"],
-                attention_mask=inputs["attention_mask"],
-                max_new_tokens=max_tokens,
-                do_sample=False,
-                pad_token_id=llm_tokenizer.eos_token_id,
-                eos_token_id=llm_tokenizer.eos_token_id
-            )
-        
-        # Decode each answer
-        for j, (output, prompt_length) in enumerate(zip(outputs, prompt_lengths)):
-            generated_tokens = output[prompt_length:]
-            generated_text = llm_tokenizer.decode(generated_tokens, skip_special_tokens=True)
-            all_answers.append(generated_text.strip())
+    # Save original padding side and set to left for decoder-only models
+    original_padding_side = llm_tokenizer.padding_side
+    llm_tokenizer.padding_side = 'left'
+    
+    try:
+        for i in range(0, len(question_context_pairs), batch_size):
+            batch_pairs = question_context_pairs[i:i + batch_size]
+            batch_prompts = [f"Question: {q} Context: {c} Answer:" for q, c in batch_pairs]
+            
+            # Batch tokenize with left padding
+            inputs = llm_tokenizer(batch_prompts, return_tensors="pt", padding=True, truncation=True, max_length=max_length).to(device)
+            
+            with torch.no_grad():
+                outputs = llm.generate(
+                    inputs["input_ids"],
+                    attention_mask=inputs["attention_mask"],
+                    max_new_tokens=max_tokens,
+                    do_sample=False,
+                    pad_token_id=llm_tokenizer.eos_token_id,
+                    eos_token_id=llm_tokenizer.eos_token_id
+                )
+            
+            # Decode each answer (only the newly generated tokens)
+            for j, (input_ids, output) in enumerate(zip(inputs["input_ids"], outputs)):
+                input_length = len(input_ids)
+                generated_tokens = output[input_length:]
+                generated_text = llm_tokenizer.decode(generated_tokens, skip_special_tokens=True)
+                all_answers.append(generated_text.strip())
+    
+    finally:
+        # Restore original padding side
+        llm_tokenizer.padding_side = original_padding_side
     
     return all_answers
 
@@ -483,25 +492,38 @@ def precompute_squad_embeddings(corpus_texts, model, bert_tokenizer, config):
 
 
 def evaluate_squad(model, qa_data, corpus_embeddings, squad_corpus, llm, llm_tokenizer, bert_tokenizer, config, num_examples=500):
-    """Evaluate retrieval and generation on SQuAD"""
+    """Optimized evaluation with batch encoding, batch generation, and async LLM judge"""
     model.eval()
+    
+    # Filter valid examples
+    valid_items = [item for item in qa_data[:num_examples] if item["answer"] != "Unanswerable"]
+    if not valid_items:
+        return {"Retrieval_Accuracy": 0.0, "LLM_Loss": 0.0, "Exact_Match": 0.0, "F1_Score": 0.0, "LLM_Judge": 0.0, "Num_Examples": 0}
+    
+    print(f"Processing {len(valid_items)} valid examples")
+    
+    # OPTIMIZATION 1: Batch encode all questions at once
+    questions = [f"query: {item['question']}" for item in valid_items]
+    with torch.no_grad():
+        question_embs = encode_texts(questions, model, bert_tokenizer, config["encode_max_length"])
     
     retrieval_hits = []
     llm_losses = []
     exact_matches = []
     f1_scores = []
-    llm_judge_scores = []
+    
+    # Collect data for batch processing
+    generation_pairs = []  # (question, best_context) pairs
+    judge_data = []        # (question, correct_answer) pairs for LLM judge
     
     with torch.no_grad():
-        for item in tqdm(qa_data[:num_examples], desc="Evaluation"):
-            if item["answer"] == "Unanswerable":
-                continue
-            
+        for i, item in enumerate(tqdm(valid_items, desc="Processing retrieval and LLM loss")):
             question = item["question"]
             correct_answer = item["answer"]
             correct_context_idx = item["context_idx"]
             
-            question_emb = encode_texts([f"query: {question}"], model, bert_tokenizer, config["encode_max_length"])
+            # Use pre-computed question embedding
+            question_emb = question_embs[i:i+1]
             similarities = torch.matmul(question_emb, corpus_embeddings.T).squeeze(0)
             best_context_idx = similarities.argmax().item()
             best_context = squad_corpus[best_context_idx]
@@ -528,26 +550,54 @@ def evaluate_squad(model, qa_data, corpus_embeddings, squad_corpus, llm, llm_tok
                 loss = F.cross_entropy(logits[valid_positions], labels[valid_positions])
                 llm_losses.append(loss.item())
             
-            # Generate answer
-            try:
-                generated_answer = generate_answer(question, best_context, llm, llm_tokenizer, 
-                                                 config["generation_max_length"], config["generation_max_tokens"])
+            # Collect for batch processing
+            generation_pairs.append((question, best_context))
+            judge_data.append((question, correct_answer))
+    
+    # OPTIMIZATION 2: Batch answer generation
+    print("Generating answers in batches...")
+    try:
+        generated_answers = generate_answers_batch(
+            generation_pairs, llm, llm_tokenizer, 
+            config["generation_max_length"], config["generation_max_tokens"], batch_size=8
+        )
+        
+        # Compute EM and F1 scores
+        for i, (_, correct_answer) in enumerate(judge_data):
+            if i < len(generated_answers):
+                generated_answer = generated_answers[i]
                 em = compute_exact_match(generated_answer, correct_answer)
                 f1 = compute_f1(generated_answer, correct_answer)
-                llm_judge = llm_judge_answer(question, correct_answer, generated_answer)
-                
                 exact_matches.append(em)
                 f1_scores.append(f1)
-                llm_judge_scores.append(llm_judge)
-            except:
-                continue
+    except Exception as e:
+        print(f"Batch generation failed: {e}")
+        generated_answers = []
+    
+    # OPTIMIZATION 3: Async LLM judge
+    llm_judge_scores = []
+    if generated_answers and len(generated_answers) == len(judge_data):
+        print("Running async LLM judge...")
+        try:
+            async def run_async_judge():
+                judge_tasks = [
+                    llm_judge_answer_async(question, correct_answer, generated_answer)
+                    for (question, correct_answer), generated_answer in zip(judge_data, generated_answers)
+                ]
+                return await batch_llm_judge(judge_tasks)
+            
+            # Run async LLM judge
+            llm_judge_scores = asyncio.run(run_async_judge())
+        except Exception as e:
+            print(f"Async LLM judge failed: {e}")
+            llm_judge_scores = [0.0] * len(generated_answers)
     
     return {
-        "Retrieval_Accuracy": np.mean(retrieval_hits),
-        "LLM_Loss": np.mean(llm_losses),
-        "Exact_Match": np.mean(exact_matches),
-        "F1_Score": np.mean(f1_scores),
-        "LLM_Judge": np.mean(llm_judge_scores),
+        "Retrieval_Accuracy": np.mean(retrieval_hits) if retrieval_hits else 0.0,
+        "LLM_Loss": np.mean(llm_losses) if llm_losses else 0.0,
+        "Exact_Match": np.mean(exact_matches) if exact_matches else 0.0,
+        "F1_Score": np.mean(f1_scores) if f1_scores else 0.0,
+        "LLM_Judge": np.mean(llm_judge_scores) if llm_judge_scores else 0.0,
         "Num_Examples": len(retrieval_hits)
     }
 

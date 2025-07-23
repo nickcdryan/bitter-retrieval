@@ -121,6 +121,13 @@ def setup_env_file():
         print("\n3️⃣  Weights & Biases Settings")
         wandb_entity = input("   Enter your W&B username (optional): ").strip()
     
+    # Gemini API Key
+    print("\n4️⃣  Gemini API Key (OPTIONAL)")
+    print("   This enables LLM-as-judge evaluation with Gemini 2.0 Flash")
+    print("   👉 Get your key at: https://aistudio.google.com/app/apikey")
+    
+    gemini_key = input("\n   Enter your Gemini API key (or press Enter to skip): ").strip()
+    
     # Update .env file
     env_content = []
     
@@ -142,6 +149,9 @@ def setup_env_file():
         elif line.startswith('WANDB_ENTITY=') and wandb_entity:
             new_content.append(f"WANDB_ENTITY={wandb_entity}\n")
             updated_keys.add('WANDB_ENTITY')
+        elif line.startswith('GEMINI_API_KEY=') and gemini_key:
+            new_content.append(f"GEMINI_API_KEY={gemini_key}\n")
+            updated_keys.add('GEMINI_API_KEY')
         else:
             new_content.append(line)
     
@@ -154,6 +164,9 @@ def setup_env_file():
     
     if wandb_entity and 'WANDB_ENTITY' not in updated_keys:
         new_content.append(f"WANDB_ENTITY={wandb_entity}\n")
+    
+    if gemini_key and 'GEMINI_API_KEY' not in updated_keys:
+        new_content.append(f"GEMINI_API_KEY={gemini_key}\n")
     
     # Write the file
     with open(env_path, 'w') as f:
@@ -171,6 +184,11 @@ def setup_env_file():
         print("✅ Weights & Biases: Configured")
     else:
         print("⚠️  Weights & Biases: Not configured (optional)")
+    
+    if gemini_key:
+        print("✅ Gemini API: Configured")
+    else:
+        print("⚠️  Gemini API: Not configured (optional - needed for LLM-as-judge)")
 
 
 def main():

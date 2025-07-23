@@ -12,12 +12,20 @@ import os
 from collections import defaultdict, Counter
 import wandb
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print("✅ Loaded .env file")
+except ImportError:
+    print("python-dotenv not installed - using system environment variables only")
+
 
 def get_config():
     """Training configuration"""
     return {
         # Models
-        "llm_model": "meta-llama/Llama-3.2-3B",
+        "llm_model": "Qwen/Qwen3-8B-Base",
         "encoder_model": "nomic-ai/nomic-embed-text-v1-unsupervised",
         
         # Max lengths
@@ -27,11 +35,11 @@ def get_config():
         "generation_max_tokens": 40,
         
         # Training params
-        "batch_size": 2,
+        "batch_size": 8,
         "learning_rate": 2e-5,
-        "num_epochs": 2,
-        "warmup_steps": 400,
-        "validation_frequency": 750,
+        "num_epochs": 1,  # Just 1 epoch for testing
+        "warmup_steps": 10,  # Fewer warmup steps
+        "validation_frequency": 20,  # Validate more frequently
         
         # Training method and params
         "training_method": "standard_infonce",  # "standard_infonce", "converted_infonce", "kl_soft_infonce"
@@ -42,17 +50,17 @@ def get_config():
         
         # Data params
         "dataset_name": "nickcdryan/ms_marco_softlabel_Qwen3-8B-Base_bf16",
-        "num_data_examples": 25000,
-        "squad_num_titles": 100,
-        "squad_questions_per_title": 5,
-        "squad_eval_examples": 100,
-        "squad_test_examples": 400,
-        "msmarco_val_examples": 500,
-        "msmarco_test_examples": 200,
+        "num_data_examples": 1000,  # Small test size
+        "squad_num_titles": 5,     # Fewer titles for testing
+        "squad_questions_per_title": 2,
+        "squad_eval_examples": 10, # Small validation sets
+        "squad_test_examples": 20,
+        "msmarco_val_examples": 10,
+        "msmarco_test_examples": 10,
         
         # Logging
         "wandb_project": "bitter-retrieval",
-        "run_name": "standard_infonce-NOMIC-HF_dataset-temp:.02-epochs:2-bs:2-LR:2e-5-warmup:400",
+        "run_name": "TEST_RUN-standard_infonce-NOMIC-HF_dataset-100examples",
         
         # Model saving
         "save_model": True,
@@ -61,6 +69,7 @@ def get_config():
         # Tokens (from environment)
         "hf_token": os.getenv("HF_TOKEN"),
         "wandb_key": os.getenv("WANDB_API_KEY"),
+        "gemini_key": os.getenv("GEMINI_API_KEY"),
     }
 
 
@@ -299,6 +308,57 @@ def compute_exact_match(prediction, reference):
     return float(prediction.lower().strip() == reference.lower().strip())
 
 
+def call_llm(prompt, system_instruction=None):
+    """Call the Gemini LLM with a prompt and return the response."""
+    try:
+        import google.generativeai as genai
+        import os
+
+        # Configure the API
+        genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+
+        # Create the model
+        model = genai.GenerativeModel("gemini-2.0-flash")
+
+        # Combine system instruction with prompt if provided
+        if system_instruction:
+            full_prompt = f"{system_instruction}\n\n{prompt}"
+        else:
+            full_prompt = prompt
+
+        # Generate response
+        response = model.generate_content(full_prompt)
+        return response.text
+    except Exception as e:
+        print(f"Error calling Gemini API: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+def llm_judge_answer(question, reference_answer, generated_answer):
+    """Use Gemini to judge if generated answer matches reference answer"""
+    prompt = f"""Question: {question}
+Reference Answer: {reference_answer}
+Generated Answer: {generated_answer}
+
+Does the Generated Answer correctly answer the question in the same way as the Reference Answer? Consider the answers equivalent if they convey the same core information, even if worded differently. The question is provided for additional context.
+
+Answer with only "YES" or "NO":"""
+
+    system_instruction = "You are an expert evaluator. Compare answers for semantic equivalence and respond with only YES or NO."
+    
+    response = call_llm(prompt, system_instruction)
+    response = response.strip().upper()
+    
+    # Parse response - look for YES/NO
+    if "YES" in response:
+        return 1.0
+    elif "NO" in response:
+        return 0.0
+    else:
+        # Default to 0 if unclear response
+        return 0.0
+
+
 def save_model(model, config):
     """Save trained model"""
     if not config["save_model"]:
@@ -334,6 +394,7 @@ def evaluate_squad(model, qa_data, corpus_embeddings, squad_corpus, llm, llm_tok
     llm_losses = []
     exact_matches = []
     f1_scores = []
+    llm_judge_scores = []
     
     with torch.no_grad():
         for item in tqdm(qa_data[:num_examples], desc="SQuAD evaluation"):
@@ -377,8 +438,11 @@ def evaluate_squad(model, qa_data, corpus_embeddings, squad_corpus, llm, llm_tok
                                                  config["generation_max_length"], config["generation_max_tokens"])
                 em = compute_exact_match(generated_answer, correct_answer)
                 f1 = compute_f1(generated_answer, correct_answer)
+                llm_judge = llm_judge_answer(question, correct_answer, generated_answer)
+                
                 exact_matches.append(em)
                 f1_scores.append(f1)
+                llm_judge_scores.append(llm_judge)
             except:
                 continue
     
@@ -387,6 +451,7 @@ def evaluate_squad(model, qa_data, corpus_embeddings, squad_corpus, llm, llm_tok
         "LLM_Loss": np.mean(llm_losses),
         "Exact_Match": np.mean(exact_matches),
         "F1_Score": np.mean(f1_scores),
+        "LLM_Judge": np.mean(llm_judge_scores),
         "Num_Examples": len(retrieval_hits)
     }
 
@@ -484,10 +549,12 @@ def train_standard_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarco
                     "SQuAD EM": val_results['squad']['Exact_Match'],
                     "SQuAD Retrieval": val_results['squad']['Retrieval_Accuracy'],
                     "SQuAD Loss": val_results['squad']['LLM_Loss'],
+                    "SQuAD LLM_Judge": val_results['squad']['LLM_Judge'],
                     "MSMARCO F1": val_results['msmarco']['F1_Score'],
                     "MSMARCO EM": val_results['msmarco']['Exact_Match'],
                     "MSMARCO Retrieval": val_results['msmarco']['Retrieval_Accuracy'],
                     "MSMARCO Loss": val_results['msmarco']['LLM_Loss'],
+                    "MSMARCO LLM_Judge": val_results['msmarco']['LLM_Judge'],
                 }
                 wandb.log(val_metrics, step=train_step)
             
@@ -576,10 +643,12 @@ def train_converted_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarc
                     "SQuAD EM": val_results['squad']['Exact_Match'],
                     "SQuAD Retrieval": val_results['squad']['Retrieval_Accuracy'],
                     "SQuAD Loss": val_results['squad']['LLM_Loss'],
+                    "SQuAD LLM_Judge": val_results['squad']['LLM_Judge'],
                     "MSMARCO F1": val_results['msmarco']['F1_Score'],
                     "MSMARCO EM": val_results['msmarco']['Exact_Match'],
                     "MSMARCO Retrieval": val_results['msmarco']['Retrieval_Accuracy'],
                     "MSMARCO Loss": val_results['msmarco']['LLM_Loss'],
+                    "MSMARCO LLM_Judge": val_results['msmarco']['LLM_Judge'],
                 }
                 wandb.log(val_metrics, step=train_step)
             
@@ -681,10 +750,12 @@ def train_kl_soft_infonce_batched(soft_train_data, squad_qa_data, squad_corpus, 
                     "SQuAD EM": val_results['squad']['Exact_Match'],
                     "SQuAD Retrieval": val_results['squad']['Retrieval_Accuracy'],
                     "SQuAD Loss": val_results['squad']['LLM_Loss'],
+                    "SQuAD LLM_Judge": val_results['squad']['LLM_Judge'],
                     "MSMARCO F1": val_results['msmarco']['F1_Score'],
                     "MSMARCO EM": val_results['msmarco']['Exact_Match'],
                     "MSMARCO Retrieval": val_results['msmarco']['Retrieval_Accuracy'],
                     "MSMARCO Loss": val_results['msmarco']['LLM_Loss'],
+                    "MSMARCO LLM_Judge": val_results['msmarco']['LLM_Judge'],
                 }
                 wandb.log(val_metrics, step=train_step)
             
@@ -710,7 +781,10 @@ def main():
     
     # Setup wandb
     if config["wandb_key"]:
+        print(f"Logging into wandb with key: {config['wandb_key'][:8]}...")
         wandb.login(key=config["wandb_key"])
+    else:
+        print("No wandb API key found - skipping automatic login")
     
     # Setup
     global device

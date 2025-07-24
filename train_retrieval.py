@@ -47,7 +47,7 @@ def get_config():
         "validation_frequency": 500,  # Validate more frequently
         
         # Training method and params
-        "training_method": "standard_infonce",  # "standard_infonce", "converted_infonce", "kl_soft_infonce"
+        "training_method": "converted_infonce",  # "standard_infonce", "converted_infonce", "kl_soft_infonce"
         "temperature": 0.02,
         "teacher_temp": 0.1,
         "student_temp": 0.05,
@@ -79,7 +79,7 @@ def get_config():
         
         # Logging
         "wandb_project": "bitter-retrieval",
-        "run_name": "standard_infonce-BERT-fulltraining-epoch:2-batch:32",
+        "run_name": "converted_infonce-BERT-fulltraining-epoch:2-batch:32",
         
         # Model saving
         "save_model": True,
@@ -788,6 +788,10 @@ def train_standard_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarco
     return model
 
 
+
+
+
+
 def train_converted_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarco_qa_data, msmarco_corpus, llm, llm_tokenizer, bert_tokenizer, config):
     """Train Converted InfoNCE on converted labels"""
     print("Training Converted InfoNCE on converted labels")
@@ -813,11 +817,20 @@ def train_converted_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarc
         for i in tqdm(range(0, len(soft_train_data), config["batch_size"]), desc=f"Epoch {epoch+1}"):
             batch_items = soft_train_data[i:i+config["batch_size"]]
             batch_loss = 0
+            valid_items = 0
             
-            for item in batch_items:
-                if should_skip_item(item):
-                    continue
-                
+            # Filter valid items and collect data for batching
+            valid_batch_items = [item for item in batch_items if not should_skip_item(item)]
+            if len(valid_batch_items) == 0:
+                continue
+            
+            # Collect all queries and passages for batch encoding
+            all_queries = []
+            all_pos_passages = []
+            all_neg_passages = []
+            item_metadata = []  # Track which passages belong to which item
+            
+            for item in valid_batch_items:
                 query = item['query']
                 passages = item['passages']['passage_text']
                 soft_labels = item['passages']['soft_labels']
@@ -830,13 +843,47 @@ def train_converted_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarc
                 if not neg_indices:
                     continue
                 
-                query_emb = encode_texts([f"query: {query}"], model, bert_tokenizer, config["encode_max_length"])
-                pos_emb = encode_texts([f"passage: {passages[pos_idx]}"], model, bert_tokenizer, config["encode_max_length"])
-                neg_embs = encode_texts([f"passage: {passages[i]}" for i in neg_indices], model, bert_tokenizer, config["encode_max_length"])
+                valid_items += 1
                 
+                # Collect for batch encoding
+                all_queries.append(f"query: {query}")
+                all_pos_passages.append(f"passage: {passages[pos_idx]}")
+                
+                # Store negative passages and metadata
+                neg_passages_for_item = [f"passage: {passages[i]}" for i in neg_indices]
+                all_neg_passages.extend(neg_passages_for_item)
+                
+                item_metadata.append({
+                    'neg_start_idx': len(all_neg_passages) - len(neg_passages_for_item),
+                    'neg_count': len(neg_passages_for_item)
+                })
+            
+            if valid_items == 0:
+                continue
+            
+            # Batch encoding
+            query_embs = encode_texts(all_queries, model, bert_tokenizer, config["encode_max_length"]).to(device)
+            pos_embs = encode_texts(all_pos_passages, model, bert_tokenizer, config["encode_max_length"]).to(device)
+            neg_embs = encode_texts(all_neg_passages, model, bert_tokenizer, config["encode_max_length"]).to(device)
+            
+            # Loss computation
+            batch_loss = 0
+            
+            for i, metadata in enumerate(item_metadata):
+                # Get embeddings for this item
+                query_emb = query_embs[i:i+1]
+                pos_emb = pos_embs[i:i+1]
+                
+                # Get negative embeddings for this item
+                neg_start = metadata['neg_start_idx']
+                neg_end = neg_start + metadata['neg_count']
+                item_neg_embs = neg_embs[neg_start:neg_end]
+                
+                # Compute similarities
                 pos_sim = torch.sum(query_emb * pos_emb, dim=1)
-                neg_sims = torch.sum(query_emb.unsqueeze(1) * neg_embs, dim=2).squeeze(0)
+                neg_sims = torch.sum(query_emb.unsqueeze(1) * item_neg_embs, dim=2).squeeze(0)
                 
+                # InfoNCE loss
                 logits = torch.cat([pos_sim, neg_sims])
                 logits = logits / config["temperature"]
                 labels = torch.zeros(1, dtype=torch.long).to(device)
@@ -844,8 +891,21 @@ def train_converted_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarc
                 
                 batch_loss += loss
             
+            # Normalize by number of valid items
+            if valid_items > 0:
+                batch_loss = batch_loss / valid_items
+            
             wandb.log({"Contrastive loss": batch_loss}, step=train_step)
             
+            # Complete backward pass first to free gradients
+            if batch_loss > 0:
+                optimizer.zero_grad()
+                batch_loss.backward()
+                optimizer.step()
+                scheduler.step()
+                total_loss += batch_loss.item()
+            
+            # Now do validation with freed GPU memory
             if train_step % config["validation_frequency"] == 0:
                 model.eval()
                 val_results = run_all_validation(model, squad_qa_data, squad_corpus, msmarco_qa_data, msmarco_corpus, llm, llm_tokenizer, bert_tokenizer, config)
@@ -865,13 +925,6 @@ def train_converted_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarc
                     "MSMARCO LLM_Judge": val_results['msmarco']['LLM_Judge'],
                 }
                 wandb.log(val_metrics, step=train_step)
-            
-            if batch_loss > 0:
-                optimizer.zero_grad()
-                batch_loss.backward()
-                optimizer.step()
-                scheduler.step()
-                total_loss += batch_loss.item()
             
             train_step += 1
         
@@ -1037,6 +1090,7 @@ def main():
         config=config
     )
     
+    print(f"Training model with method: {config['training_method']}")
     # Train model based on method
     if config["training_method"] == "standard_infonce":
         model = train_standard_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarco_qa_data, msmarco_corpus, llm, llm_tokenizer, bert_tokenizer, config)
@@ -1046,19 +1100,28 @@ def main():
         model = train_kl_soft_infonce_batched(soft_train_data, squad_qa_data, squad_corpus, msmarco_qa_data, msmarco_corpus, llm, llm_tokenizer, bert_tokenizer, config)
     else:
         raise ValueError(f"Unknown training method: {config['training_method']}")
+
     
     # Final evaluation
-    squad_test_start = config["squad_eval_examples"]
-    squad_test_end = squad_test_start + config["squad_test_examples"]
-    squad_test_set = squad_qa_data[squad_test_start:squad_test_end]
+    # Move LLM to GPU for final evaluation
+    llm.to(device)
     
-    squad_embeddings = precompute_squad_embeddings(squad_corpus, model, bert_tokenizer, config)
-    squad_results = evaluate_squad(model, squad_test_set, squad_embeddings, squad_corpus, llm, llm_tokenizer, bert_tokenizer, config)
-    
-    # MS MARCO final evaluation
-    msmarco_test_qa_data, msmarco_test_corpus = preprocess_msmarco_validation(config, config["msmarco_test_examples"])
-    msmarco_embeddings = precompute_squad_embeddings(msmarco_test_corpus, model, bert_tokenizer, config)
-    msmarco_results = evaluate_squad(model, msmarco_test_qa_data, msmarco_embeddings, msmarco_test_corpus, llm, llm_tokenizer, bert_tokenizer, config)
+    try:
+        squad_test_start = config["squad_eval_examples"]
+        squad_test_end = squad_test_start + config["squad_test_examples"]
+        squad_test_set = squad_qa_data[squad_test_start:squad_test_end]
+        
+        squad_embeddings = precompute_squad_embeddings(squad_corpus, model, bert_tokenizer, config)
+        squad_results = evaluate_squad(model, squad_test_set, squad_embeddings, squad_corpus, llm, llm_tokenizer, bert_tokenizer, config)
+        
+        # MS MARCO final evaluation
+        msmarco_test_qa_data, msmarco_test_corpus = preprocess_msmarco_validation(config, config["msmarco_test_examples"])
+        msmarco_embeddings = precompute_squad_embeddings(msmarco_test_corpus, model, bert_tokenizer, config)
+        msmarco_results = evaluate_squad(model, msmarco_test_qa_data, msmarco_embeddings, msmarco_test_corpus, llm, llm_tokenizer, bert_tokenizer, config)
+    finally:
+        # Move LLM back to CPU and clear cache
+        llm.cpu()
+        torch.cuda.empty_cache()
     
     # Log final results
     final_results = {

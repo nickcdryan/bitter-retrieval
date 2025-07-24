@@ -47,11 +47,11 @@ def get_config():
         "validation_frequency": 500,  # Validate more frequently
         
         # Training method and params
-        "training_method": "converted_infonce",  # "standard_infonce", "converted_infonce", "kl_soft_infonce"
-        "temperature": 0.02,
-        "teacher_temp": 0.1,
-        "student_temp": 0.05,
-        "margin": 1.0,
+        "training_method": "kl_soft_infonce",  # "standard_infonce", "converted_infonce", "kl_soft_infonce"
+        "temperature": 0.02, # for standard and converted
+        "teacher_temp": 0.01, # for soft kl
+        "student_temp": 0.01, # for soft kl
+        "margin": 1.0, # for soft kl
         
         # Data params
         "dataset_name": "nickcdryan/ms_marco_softlabel_Qwen3-8B-Base_bf16",
@@ -79,14 +79,14 @@ def get_config():
         
         # Logging
         "wandb_project": "bitter-retrieval",
-        "run_name": "converted_infonce-BERT-fulltraining-epoch:2-batch:32",
+        "run_name": "kl_soft-BERT-fulltraining-epoch:2-batch:32",
         
         # Model saving
         "save_model": True,
         "model_save_path": "models/",
         
         # Tokens (from environment)
-        "hf_token": os.getenv("HF_TOKEN"),
+        "hf_token": os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN"),
         "wandb_key": os.getenv("WANDB_API_KEY"),
         "gemini_key": os.getenv("GEMINI_API_KEY"),
     }
@@ -1000,17 +1000,19 @@ def train_kl_soft_infonce_batched(soft_train_data, squad_qa_data, squad_corpus, 
                 loss = loss + alpha * hinge_loss
                 batch_loss += loss
             
-            batch_loss = batch_loss / len(batch_items)
+            # Normalize by number of batch items
+            if len(batch_items) > 0:
+                batch_loss = batch_loss / len(batch_items)
             
             wandb.log({"KL loss": batch_loss}, step=train_step)
             
             # Complete backward pass first to free gradients
-            optimizer.zero_grad()
-            batch_loss.backward()
-            optimizer.step()
-            scheduler.step()
-            
-            total_loss += batch_loss.item()
+            if batch_loss > 0:
+                optimizer.zero_grad()
+                batch_loss.backward()
+                optimizer.step()
+                scheduler.step()
+                total_loss += batch_loss.item()
             
             # Now do validation with freed GPU memory
             if train_step % config["validation_frequency"] == 0:

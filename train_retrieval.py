@@ -43,8 +43,21 @@ def get_config():
         "batch_size": 32,
         "learning_rate": 2e-5,
         "num_epochs": 2,  # Just 1 epoch for testing
-        "warmup_steps": 200,  # Fewer warmup steps
+        "warmup_steps": 200,  # Number of warmup steps
         "validation_frequency": 500,  # Validate more frequently
+        
+        # Learning rate scheduling
+        "use_warmup": True,  # Enable/disable warmup
+        "use_lr_decay": False,  # Enable/disable linear decay after warmup
+        # Examples:
+        # use_warmup=True, use_lr_decay=False: warmup then constant LR
+        # use_warmup=True, use_lr_decay=True: warmup then linear decay
+        # use_warmup=False, use_lr_decay=True: linear decay from start
+        # use_warmup=False, use_lr_decay=False: constant LR throughout
+        
+        # Gradient clipping
+        "gradient_clipping": True,  # Enable/disable gradient clipping
+        "grad_clip_max_norm": 1.0,  # Maximum gradient norm
         
         # Training method and params
         "training_method": "modular",  # "standard_infonce", "converted_infonce", "kl_soft_infonce", "modular"
@@ -58,6 +71,10 @@ def get_config():
         # "loss_components": {"mse": 1.0},  # MSE only
         "loss_components": {"kl": 0.5, "converted_infonce": 0.5},  # KL + InfoNCE
         # "loss_components": {"kl": 0.8, "mse": 0.2},  # KL + MSE
+        # "loss_components": {"margin": 1.0},  # Margin loss only
+        # "loss_components": {"kl": 0.6, "margin": 0.4},  # KL + Margin
+        # "loss_components": {"standard_infonce": 1.0},  # Standard InfoNCE (equivalent to train_standard_infonce)
+        # "loss_components": {"standard_infonce": 0.5, "converted_infonce": 0.5},  # Both InfoNCE types
         #"loss_components": {"kl": 1.0},  # Default: KL only
         
         # Data params
@@ -665,12 +682,24 @@ def train_standard_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarco
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["learning_rate"])
     train_step = 0
     
-    # Warmup scheduler
+    # Learning rate scheduler
+    total_steps = (len(soft_train_data) // config["batch_size"]) * config["num_epochs"]
+    
     def lr_lambda(step):
-        if step < config["warmup_steps"]:
+        if config["use_warmup"] and step < config["warmup_steps"]:
             return step / config["warmup_steps"]
+        elif config["use_lr_decay"] and config["use_warmup"]:
+            # Linear decay after warmup
+            decay_steps = total_steps - config["warmup_steps"]
+            decay_progress = (step - config["warmup_steps"]) / decay_steps
+            return max(0.0, 1.0 - decay_progress)
+        elif config["use_lr_decay"] and not config["use_warmup"]:
+            # Linear decay from start
+            decay_progress = step / total_steps
+            return max(0.0, 1.0 - decay_progress)
         else:
             return 1.0
+    
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
     validation_results = []
@@ -763,6 +792,8 @@ def train_standard_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarco
             if batch_loss > 0:
                 optimizer.zero_grad()
                 batch_loss.backward()
+                if config["gradient_clipping"]:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config["grad_clip_max_norm"])
                 optimizer.step()
                 scheduler.step()
                 total_loss += batch_loss.item()
@@ -805,12 +836,24 @@ def train_converted_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarc
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["learning_rate"])
     train_step = 0
     
-    # Warmup scheduler
+    # Learning rate scheduler
+    total_steps = (len(soft_train_data) // config["batch_size"]) * config["num_epochs"]
+    
     def lr_lambda(step):
-        if step < config["warmup_steps"]:
+        if config["use_warmup"] and step < config["warmup_steps"]:
             return step / config["warmup_steps"]
+        elif config["use_lr_decay"] and config["use_warmup"]:
+            # Linear decay after warmup
+            decay_steps = total_steps - config["warmup_steps"]
+            decay_progress = (step - config["warmup_steps"]) / decay_steps
+            return max(0.0, 1.0 - decay_progress)
+        elif config["use_lr_decay"] and not config["use_warmup"]:
+            # Linear decay from start
+            decay_progress = step / total_steps
+            return max(0.0, 1.0 - decay_progress)
         else:
             return 1.0
+    
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
     validation_results = []
@@ -906,6 +949,8 @@ def train_converted_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarc
             if batch_loss > 0:
                 optimizer.zero_grad()
                 batch_loss.backward()
+                if config["gradient_clipping"]:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config["grad_clip_max_norm"])
                 optimizer.step()
                 scheduler.step()
                 total_loss += batch_loss.item()
@@ -949,25 +994,24 @@ def train_kl_soft_infonce_batched(soft_train_data, squad_qa_data, squad_corpus, 
     train_step = 0
     validation_results = []
     
-    # # Warmup scheduler
-    # def lr_lambda(step):
-    #     if step < config["warmup_steps"]:
-    #         return step / config["warmup_steps"]
-    #     else:
-    #         return 1.0
-    # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-
-    # Warmup + linear decay scheduler
-    # Calculate total training steps for linear decay
+    # Learning rate scheduler
     total_steps = (len(soft_train_data) // config["batch_size"]) * config["num_epochs"]
+    
     def lr_lambda(step):
-        if step < config["warmup_steps"]:
+        if config["use_warmup"] and step < config["warmup_steps"]:
             return step / config["warmup_steps"]
-        else:
-            # Linear decay from 1.0 to 0.0 after warmup
+        elif config["use_lr_decay"] and config["use_warmup"]:
+            # Linear decay after warmup
             decay_steps = total_steps - config["warmup_steps"]
             decay_progress = (step - config["warmup_steps"]) / decay_steps
             return max(0.0, 1.0 - decay_progress)
+        elif config["use_lr_decay"] and not config["use_warmup"]:
+            # Linear decay from start
+            decay_progress = step / total_steps
+            return max(0.0, 1.0 - decay_progress)
+        else:
+            return 1.0
+    
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
     for epoch in range(config["num_epochs"]):
@@ -1029,7 +1073,8 @@ def train_kl_soft_infonce_batched(soft_train_data, squad_qa_data, squad_corpus, 
             if batch_loss > 0:
                 optimizer.zero_grad()
                 batch_loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                if config["gradient_clipping"]:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config["grad_clip_max_norm"])
                 optimizer.step()
                 scheduler.step()
                 total_loss += batch_loss.item()
@@ -1092,7 +1137,7 @@ def compute_converted_infonce_loss(student_similarities, teacher_soft_labels, co
     return loss
 
 
-def compute_combined_loss(student_similarities, teacher_soft_labels, config, loss_components):
+def compute_combined_loss(student_similarities, teacher_soft_labels, teacher_hard_labels, config, loss_components):
     """Combine multiple loss components with weights"""
     total_loss = 0.0
     loss_dict = {}
@@ -1107,6 +1152,10 @@ def compute_combined_loss(student_similarities, teacher_soft_labels, config, los
             component_loss = compute_kl_loss(student_similarities, teacher_soft_labels, config)
         elif loss_name == "converted_infonce":
             component_loss = compute_converted_infonce_loss(student_similarities, teacher_soft_labels, config)
+        elif loss_name == "standard_infonce":
+            component_loss = compute_standard_infonce_loss(student_similarities, teacher_hard_labels, config)
+        elif loss_name == "margin":
+            component_loss = compute_margin_loss(student_similarities, teacher_soft_labels, config)
         else:
             raise ValueError(f"Unknown loss component: {loss_name}")
         
@@ -1130,6 +1179,48 @@ def compute_mse_loss(student_similarities, teacher_soft_labels, config):
     return loss
 
 
+def compute_margin_loss(student_similarities, teacher_soft_labels, config):
+    """Margin hinge loss: positive passage should have higher similarity than negatives by margin"""
+    # Best passage has lowest teacher loss
+    best_idx = teacher_soft_labels.argmin().item()
+    positive_sim = student_similarities[best_idx]
+    
+    # Get negative similarities (all except the positive one)
+    negative_sims = torch.cat([student_similarities[:best_idx], student_similarities[best_idx+1:]])
+    
+    if len(negative_sims) == 0:
+        return torch.tensor(0.0, device=student_similarities.device)
+    
+    # Hinge loss: max(0, margin - (pos_sim - neg_sim))
+    hinge_loss = torch.clamp(config["margin"] - (positive_sim - negative_sims), min=0).mean()
+    return hinge_loss
+
+
+def compute_standard_infonce_loss(student_similarities, teacher_hard_labels, config):
+    """Standard InfoNCE loss using original hard labels"""
+    # Find positive and negative indices from original hard labels
+    try:
+        pos_idx = teacher_hard_labels.index(1)
+    except ValueError:
+        # No positive label found, fallback to first passage
+        pos_idx = 0
+    
+    neg_indices = [i for i, label in enumerate(teacher_hard_labels) if label == 0]
+    
+    if len(neg_indices) == 0:
+        return torch.tensor(0.0, device=student_similarities.device)
+    
+    # Get positive and negative similarities
+    pos_sim = student_similarities[pos_idx:pos_idx+1]
+    neg_sims = student_similarities[neg_indices]
+    
+    # Standard InfoNCE loss
+    logits = torch.cat([pos_sim, neg_sims]) / config["temperature"]
+    labels = torch.zeros(1, dtype=torch.long, device=student_similarities.device)
+    loss = F.cross_entropy(logits.unsqueeze(0), labels)
+    return loss
+
+
 def train_modular_loss(soft_train_data, squad_qa_data, squad_corpus, msmarco_qa_data, msmarco_corpus, 
                       llm, llm_tokenizer, bert_tokenizer, config):
     """
@@ -1140,8 +1231,17 @@ def train_modular_loss(soft_train_data, squad_qa_data, squad_corpus, msmarco_qa_
                           {"mse": 1.0} for MSE only
                           {"kl": 0.7, "converted_infonce": 0.3} for combination
                           {"kl": 0.8, "mse": 0.2} for KL + MSE
+                          {"margin": 1.0} for margin loss only
+                          {"kl": 0.5, "margin": 0.5} for KL + margin
 
+    Available loss components:
+        - "mse": Mean squared error between student similarities and teacher scores
+        - "kl": KL divergence between student and teacher distributions
+        - "converted_infonce": InfoNCE loss using converted hard labels
+        - "standard_infonce": InfoNCE loss using original hard labels
+        - "margin": Margin hinge loss (requires config["margin"] parameter)
 
+    Examples:
     # MSE only
     config["training_method"] = "modular"
     config["loss_components"] = {"mse": 1.0}
@@ -1153,6 +1253,24 @@ def train_modular_loss(soft_train_data, squad_qa_data, squad_corpus, msmarco_qa_
     # KL + MSE
     config["training_method"] = "modular" 
     config["loss_components"] = {"kl": 0.8, "mse": 0.2}
+    
+    # Margin loss only
+    config["training_method"] = "modular"
+    config["loss_components"] = {"margin": 1.0}
+    config["margin"] = 3.0  # Required for margin loss
+    
+    # KL + Margin combination
+    config["training_method"] = "modular"
+    config["loss_components"] = {"kl": 0.6, "margin": 0.4}
+    config["margin"] = 3.0
+    
+    # Standard InfoNCE only (equivalent to train_standard_infonce)
+    config["training_method"] = "modular"
+    config["loss_components"] = {"standard_infonce": 1.0}
+    
+    # Standard + Converted InfoNCE combination
+    config["training_method"] = "modular"
+    config["loss_components"] = {"standard_infonce": 0.5, "converted_infonce": 0.5}
     """
     loss_components = config.get("loss_components", {"kl": 1.0})  # Default to KL only
     print(f"Training with loss components: {loss_components}")
@@ -1162,29 +1280,25 @@ def train_modular_loss(soft_train_data, squad_qa_data, squad_corpus, msmarco_qa_
     train_step = 0
     validation_results = []
     
-    # Calculate total training steps for linear decay
+    # Learning rate scheduler
     total_steps = (len(soft_train_data) // config["batch_size"]) * config["num_epochs"]
-
-    # Warmup scheduler
+    
     def lr_lambda(step):
-        if step < config["warmup_steps"]:
+        if config["use_warmup"] and step < config["warmup_steps"]:
             return step / config["warmup_steps"]
+        elif config["use_lr_decay"] and config["use_warmup"]:
+            # Linear decay after warmup
+            decay_steps = total_steps - config["warmup_steps"]
+            decay_progress = (step - config["warmup_steps"]) / decay_steps
+            return max(0.0, 1.0 - decay_progress)
+        elif config["use_lr_decay"] and not config["use_warmup"]:
+            # Linear decay from start
+            decay_progress = step / total_steps
+            return max(0.0, 1.0 - decay_progress)
         else:
             return 1.0
+    
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-    
-
-    
-    # # Warmup + linear decay scheduler
-    # def lr_lambda(step):
-    #     if step < config["warmup_steps"]:
-    #         return step / config["warmup_steps"]
-    #     else:
-    #         # Linear decay from 1.0 to 0.0 after warmup
-    #         decay_steps = total_steps - config["warmup_steps"]
-    #         decay_progress = (step - config["warmup_steps"]) / decay_steps
-    #         return max(0.0, 1.0 - decay_progress)
-    # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
     for epoch in range(config["num_epochs"]):
         model.train()
@@ -1202,15 +1316,18 @@ def train_modular_loss(soft_train_data, squad_qa_data, squad_corpus, msmarco_qa_
             passages = []
             passage_counts = []
             soft_label_groups = []
+            hard_label_groups = []
             
             for item in batch_items:
                 q = item["query"]
                 p_list = item["passages"]["passage_text"]
                 l_list = item["passages"]["soft_labels"]
+                h_list = item["passages"]["is_selected"]  # original hard labels
                 
                 queries.append(f"query: {q}")
                 passages.extend([f"passage: {p}" for p in p_list])
                 soft_label_groups.append(torch.tensor(l_list, dtype=torch.float32, device=device))
+                hard_label_groups.append(h_list)  # keep as list for standard_infonce
                 passage_counts.append(len(p_list))
             
             # Batch encoding
@@ -1222,10 +1339,10 @@ def train_modular_loss(soft_train_data, squad_qa_data, squad_corpus, msmarco_qa_
             batch_loss = 0
             batch_loss_components = defaultdict(float)
             
-            for q_emb, p_embs, soft_labels in zip(query_embs, passage_emb_groups, soft_label_groups):
+            for q_emb, p_embs, soft_labels, hard_labels in zip(query_embs, passage_emb_groups, soft_label_groups, hard_label_groups):
                 similarities = F.cosine_similarity(q_emb.unsqueeze(0), p_embs, dim=1)
                 
-                item_loss, item_loss_dict = compute_combined_loss(similarities, soft_labels, config, loss_components)
+                item_loss, item_loss_dict = compute_combined_loss(similarities, soft_labels, hard_labels, config, loss_components)
                 batch_loss += item_loss
                 
                 # Accumulate loss components
@@ -1247,7 +1364,8 @@ def train_modular_loss(soft_train_data, squad_qa_data, squad_corpus, msmarco_qa_
             if batch_loss > 0:
                 optimizer.zero_grad()
                 batch_loss.backward()
-                #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                if config["gradient_clipping"]:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config["grad_clip_max_norm"])
                 optimizer.step()
                 scheduler.step()
                 total_loss += batch_loss.item()

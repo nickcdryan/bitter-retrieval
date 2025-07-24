@@ -49,16 +49,16 @@ def get_config():
         # Training method and params
         "training_method": "kl_soft_infonce",  # "standard_infonce", "converted_infonce", "kl_soft_infonce", "modular"
         "temperature": 0.02, # for standard and converted
-        "teacher_temp": 0.01, # for soft kl
-        "student_temp": 0.01, # for soft kl
+        "teacher_temp": .01, #0.01, # for soft kl and modular
+        "student_temp": .01, #0.01, # for soft kl and modular
         "margin": 3.0, # for soft kl
         
         # For modular training method - loss component weights
         # Examples:
         # "loss_components": {"mse": 1.0},  # MSE only
-        # "loss_components": {"kl": 0.7, "converted_infonce": 0.3},  # KL + InfoNCE
+        "loss_components": {"kl": 0.5, "converted_infonce": 0.5},  # KL + InfoNCE
         # "loss_components": {"kl": 0.8, "mse": 0.2},  # KL + MSE
-        "loss_components": {"kl": 1.0},  # Default: KL only
+        # "loss_components": {"kl": 1.0},  # Default: KL only
         
         # Data params
         "dataset_name": "nickcdryan/ms_marco_softlabel_Qwen3-8B-Base_bf16",
@@ -86,7 +86,7 @@ def get_config():
         
         # Logging
         "wandb_project": "bitter-retrieval",
-        "run_name": "kl_soft-no-margin-sumreductino-BERT-fulltraining-epoch:2-batch:32",
+        "run_name": "kl_soft-batchmeanreduction-convertedinfonce-BERT-fulltraining-epoch:2-batch:32",
         
         # Model saving
         "save_model": True,
@@ -1042,7 +1042,7 @@ def compute_kl_loss(student_similarities, teacher_soft_labels, config):
     """KL divergence loss between student and teacher distributions"""
     teacher_probs = F.softmax(-teacher_soft_labels / config["teacher_temp"], dim=0)
     log_student_probs = F.log_softmax(student_similarities / config["student_temp"], dim=0)
-    loss = F.kl_div(log_student_probs, teacher_probs, reduction='sum')
+    loss = F.kl_div(log_student_probs, teacher_probs, reduction='batchmean')
     return loss
 
 

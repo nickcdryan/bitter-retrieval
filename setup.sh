@@ -93,11 +93,15 @@ echo -e "${YELLOW}📦 Installing Poetry...${NC}"
 if ! command_exists poetry; then
     pipx install poetry
     
-    # Ensure poetry is in PATH
-    if ! command_exists poetry; then
-        export PATH="$HOME/.local/bin:$PATH"
+    # Ensure poetry is in PATH for current session
+    export PATH="$HOME/.local/bin:$PATH"
+    
+    # Also add to bashrc for future sessions if not already there
+    if ! grep -q 'export PATH="$HOME/.local/bin:$PATH"' ~/.bashrc; then
+        echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
     fi
-    echo -e "${GREEN}✅ Poetry installed${NC}"
+    
+    echo -e "${GREEN}✅ Poetry installed and added to PATH${NC}"
 else
     echo -e "${GREEN}✅ Poetry already installed${NC}"
 fi
@@ -134,10 +138,7 @@ fi
 # Step 7: Create helpful aliases and environment setup
 echo -e "${YELLOW}⚙️  Setting up environment...${NC}"
 
-# Add poetry to PATH permanently if not already there
-if ! grep -q 'export PATH="$HOME/.local/bin:$PATH"' ~/.bashrc; then
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-fi
+# PATH already configured during Poetry installation
 
 # Create helpful aliases
 ALIAS_FILE="$HOME/.bash_aliases"
@@ -210,4 +211,17 @@ echo "2. Configure API keys: poetry run python setup_env.py (recommended) or nan
 echo "3. Test setup: poetry run python test_setup.py"
 echo "4. Run training: ./run_training.sh <google_drive_file_id>"
 echo ""
-echo -e "${GREEN}🚀 Your server is ready for bitter-retrieval with CUDA support!${NC}" 
+echo -e "${GREEN}🚀 Your server is ready for bitter-retrieval with CUDA support!${NC}"
+
+# Reload the current shell environment to pick up PATH changes
+echo ""
+echo -e "${YELLOW}🔄 Reloading shell environment...${NC}"
+if [ -f ~/.bashrc ]; then
+    source ~/.bashrc
+    echo -e "${GREEN}✅ Shell environment reloaded${NC}"
+    echo ""
+    echo -e "${BLUE}🎯 You can now run Poetry commands directly in this terminal!${NC}"
+    echo "  Try: poetry --version"
+else
+    echo -e "${YELLOW}⚠️  Please run: source ~/.bashrc${NC}"
+fi 

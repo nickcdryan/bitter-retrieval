@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+# poetry run python train_retrieval.py
+
 import torch
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
@@ -11,6 +13,9 @@ import numpy as np
 import os
 from collections import defaultdict, Counter
 import wandb
+import asyncio
+import aiohttp
+from concurrent.futures import ThreadPoolExecutor
 
 # Load environment variables from .env file
 try:
@@ -25,49 +30,63 @@ def get_config():
     """Training configuration"""
     return {
         # Models
-        "llm_model": "Qwen/Qwen3-8B-Base",
-        "encoder_model": "nomic-ai/nomic-embed-text-v1-unsupervised",
+        "llm_model": "Qwen/Qwen3-8B-Base", 
+        "encoder_model": "google-bert/bert-base-uncased", #"nomic-ai/nomic-embed-text-v1-unsupervised",
         
         # Max lengths
-        "encode_max_length": 512,
+        "encode_max_length": 512,  # BERT base max sequence length 512
         "llm_max_length": 1024,
         "generation_max_length": 900,
         "generation_max_tokens": 40,
         
         # Training params
-        "batch_size": 8,
+        "batch_size": 32,
         "learning_rate": 2e-5,
-        "num_epochs": 1,  # Just 1 epoch for testing
-        "warmup_steps": 10,  # Fewer warmup steps
-        "validation_frequency": 20,  # Validate more frequently
+        "num_epochs": 2,  # Just 1 epoch for testing
+        "warmup_steps": 200,  # Fewer warmup steps
+        "validation_frequency": 500,  # Validate more frequently
         
         # Training method and params
-        "training_method": "standard_infonce",  # "standard_infonce", "converted_infonce", "kl_soft_infonce"
-        "temperature": 0.02,
-        "teacher_temp": 0.1,
-        "student_temp": 0.05,
-        "margin": 1.0,
+        "training_method": "kl_soft_infonce",  # "standard_infonce", "converted_infonce", "kl_soft_infonce"
+        "temperature": 0.02, # for standard and converted
+        "teacher_temp": 0.01, # for soft kl
+        "student_temp": 0.01, # for soft kl
+        "margin": 1.0, # for soft kl
         
         # Data params
         "dataset_name": "nickcdryan/ms_marco_softlabel_Qwen3-8B-Base_bf16",
-        "num_data_examples": 1000,  # Small test size
-        "squad_num_titles": 5,     # Fewer titles for testing
-        "squad_questions_per_title": 2,
-        "squad_eval_examples": 10, # Small validation sets
-        "squad_test_examples": 20,
-        "msmarco_val_examples": 10,
-        "msmarco_test_examples": 10,
+        "num_data_examples": -1,  # Set to None or -1 to use all available training examples
+
+        # build our corpus, including every single passages belonging to each squad_num_titles to make retrieval harder
+        # end up with squad_questions_per_title * squad_num_titles total questions, and corpus is about 45 * squad_num_titles passages
+        "squad_num_titles": 150,     # number of unique articles (with a number of questions and contexts per article)
+        "squad_questions_per_title": 5, # how many questions associated with each article
+        "squad_eval_examples": 100, # Small validation sets
+        "squad_test_examples": 500,
+        "msmarco_val_examples": 100,
+        "msmarco_test_examples": 500,
+
+
+        # LITE!
+        # build our corpus, including every single passages belonging to each squad_num_titles to make retrieval harder
+        # end up with squad_questions_per_title * squad_num_titles total questions, and corpus is about 45 * squad_num_titles passages
+        # "squad_num_titles": 10,     # number of unique articles (with a number of questions and contexts per article)
+        # "squad_questions_per_title": 5, # how many questions associated with each article
+        # "squad_eval_examples": 5, # Small validation sets
+        # "squad_test_examples": 5,
+        # "msmarco_val_examples": 5,
+        # "msmarco_test_examples": 5,
         
         # Logging
         "wandb_project": "bitter-retrieval",
-        "run_name": "TEST_RUN-standard_infonce-NOMIC-HF_dataset-100examples",
+        "run_name": "kl_soft-BERT-fulltraining-epoch:2-batch:32",
         
         # Model saving
         "save_model": True,
         "model_save_path": "models/",
         
         # Tokens (from environment)
-        "hf_token": os.getenv("HF_TOKEN"),
+        "hf_token": os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN"),
         "wandb_key": os.getenv("WANDB_API_KEY"),
         "gemini_key": os.getenv("GEMINI_API_KEY"),
     }
@@ -84,7 +103,7 @@ def setup_device_and_models(config):
     
     bert_tokenizer = AutoTokenizer.from_pretrained(config["encoder_model"], trust_remote_code=True)
     
-    llm = AutoModelForCausalLM.from_pretrained(config["llm_model"]).to(device).eval()
+    llm = AutoModelForCausalLM.from_pretrained(config["llm_model"]).eval()  # Keep on CPU
     llm_tokenizer = AutoTokenizer.from_pretrained(config["llm_model"])
     
     if llm_tokenizer.pad_token is None:
@@ -359,6 +378,103 @@ Answer with only "YES" or "NO":"""
         return 0.0
 
 
+async def llm_judge_answer_async(question, reference_answer, generated_answer):
+    """Async version of LLM judge for batch processing"""
+    prompt = f"""Question: {question}
+Reference Answer: {reference_answer}
+Generated Answer: {generated_answer}
+
+Does the Generated Answer correctly answer the question in the same way as the Reference Answer? Consider the answers equivalent if they convey the same core information, even if worded differently. The question is provided for additional context.
+
+Answer with only "YES" or "NO":"""
+
+    system_instruction = "You are an expert evaluator. Compare answers for semantic equivalence and respond with only YES or NO."
+    
+    try:
+        response = await call_llm_async(prompt, system_instruction)
+        response = response.strip().upper()
+        
+        # Parse response - look for YES/NO
+        if "YES" in response:
+            return 1.0
+        elif "NO" in response:
+            return 0.0
+        else:
+            return 0.0
+    except Exception as e:
+        print(f"Async LLM judge error: {e}")
+        return 0.0
+
+
+async def call_llm_async(prompt, system_instruction=None):
+    """Async version of call_llm for parallel API calls"""
+    import google.generativeai as genai
+    
+    # Configure the API
+    genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+    
+    # Create the model
+    model = genai.GenerativeModel("gemini-2.0-flash")
+    
+    # Combine system instruction with prompt if provided
+    if system_instruction:
+        full_prompt = f"{system_instruction}\n\n{prompt}"
+    else:
+        full_prompt = prompt
+    
+    # Use asyncio to run the sync function in thread pool
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor() as executor:
+        response = await loop.run_in_executor(executor, model.generate_content, full_prompt)
+        return response.text
+
+
+async def batch_llm_judge(judge_tasks):
+    """Process multiple LLM judge tasks in parallel"""
+    results = await asyncio.gather(*judge_tasks, return_exceptions=True)
+    return [r if not isinstance(r, Exception) else 0.0 for r in results]
+
+
+def generate_answers_batch(question_context_pairs, llm, llm_tokenizer, max_length=900, max_tokens=40, batch_size=8):
+    """Generate answers for multiple question-context pairs in batches"""
+    all_answers = []
+    
+    # Save original padding side and set to left for decoder-only models
+    original_padding_side = llm_tokenizer.padding_side
+    llm_tokenizer.padding_side = 'left'
+    
+    try:
+        for i in range(0, len(question_context_pairs), batch_size):
+            batch_pairs = question_context_pairs[i:i + batch_size]
+            batch_prompts = [f"Question: {q} Context: {c} Answer:" for q, c in batch_pairs]
+            
+            # Batch tokenize with left padding
+            inputs = llm_tokenizer(batch_prompts, return_tensors="pt", padding=True, truncation=True, max_length=max_length).to(device)
+            
+            with torch.no_grad():
+                outputs = llm.generate(
+                    inputs["input_ids"],
+                    attention_mask=inputs["attention_mask"],
+                    max_new_tokens=max_tokens,
+                    do_sample=False,
+                    pad_token_id=llm_tokenizer.eos_token_id,
+                    eos_token_id=llm_tokenizer.eos_token_id
+                )
+            
+            # Decode each answer (only the newly generated tokens)
+            for j, (input_ids, output) in enumerate(zip(inputs["input_ids"], outputs)):
+                input_length = len(input_ids)
+                generated_tokens = output[input_length:]
+                generated_text = llm_tokenizer.decode(generated_tokens, skip_special_tokens=True)
+                all_answers.append(generated_text.strip())
+    
+    finally:
+        # Restore original padding side
+        llm_tokenizer.padding_side = original_padding_side
+    
+    return all_answers
+
+
 def save_model(model, config):
     """Save trained model"""
     if not config["save_model"]:
@@ -387,25 +503,38 @@ def precompute_squad_embeddings(corpus_texts, model, bert_tokenizer, config):
 
 
 def evaluate_squad(model, qa_data, corpus_embeddings, squad_corpus, llm, llm_tokenizer, bert_tokenizer, config, num_examples=500):
-    """Evaluate retrieval and generation on SQuAD"""
+    """Optimized evaluation with batch encoding, batch generation, and async LLM judge"""
     model.eval()
+    
+    # Filter valid examples
+    valid_items = [item for item in qa_data[:num_examples] if item["answer"] != "Unanswerable"]
+    if not valid_items:
+        return {"Retrieval_Accuracy": 0.0, "LLM_Loss": 0.0, "Exact_Match": 0.0, "F1_Score": 0.0, "LLM_Judge": 0.0, "Num_Examples": 0}
+    
+    print(f"Processing {len(valid_items)} valid examples")
+    
+    # OPTIMIZATION 1: Batch encode all questions at once
+    questions = [f"query: {item['question']}" for item in valid_items]
+    with torch.no_grad():
+        question_embs = encode_texts(questions, model, bert_tokenizer, config["encode_max_length"])
     
     retrieval_hits = []
     llm_losses = []
     exact_matches = []
     f1_scores = []
-    llm_judge_scores = []
+    
+    # Collect data for batch processing
+    generation_pairs = []  # (question, best_context) pairs
+    judge_data = []        # (question, correct_answer) pairs for LLM judge
     
     with torch.no_grad():
-        for item in tqdm(qa_data[:num_examples], desc="SQuAD evaluation"):
-            if item["answer"] == "Unanswerable":
-                continue
-            
+        for i, item in enumerate(tqdm(valid_items, desc="Processing retrieval and LLM loss")):
             question = item["question"]
             correct_answer = item["answer"]
             correct_context_idx = item["context_idx"]
             
-            question_emb = encode_texts([f"query: {question}"], model, bert_tokenizer, config["encode_max_length"])
+            # Use pre-computed question embedding
+            question_emb = question_embs[i:i+1]
             similarities = torch.matmul(question_emb, corpus_embeddings.T).squeeze(0)
             best_context_idx = similarities.argmax().item()
             best_context = squad_corpus[best_context_idx]
@@ -432,26 +561,54 @@ def evaluate_squad(model, qa_data, corpus_embeddings, squad_corpus, llm, llm_tok
                 loss = F.cross_entropy(logits[valid_positions], labels[valid_positions])
                 llm_losses.append(loss.item())
             
-            # Generate answer
-            try:
-                generated_answer = generate_answer(question, best_context, llm, llm_tokenizer, 
-                                                 config["generation_max_length"], config["generation_max_tokens"])
+            # Collect for batch processing
+            generation_pairs.append((question, best_context))
+            judge_data.append((question, correct_answer))
+    
+    # OPTIMIZATION 2: Batch answer generation
+    print("Generating answers in batches...")
+    try:
+        generated_answers = generate_answers_batch(
+            generation_pairs, llm, llm_tokenizer, 
+            config["generation_max_length"], config["generation_max_tokens"], batch_size=8
+        )
+        
+        # Compute EM and F1 scores
+        for i, (_, correct_answer) in enumerate(judge_data):
+            if i < len(generated_answers):
+                generated_answer = generated_answers[i]
                 em = compute_exact_match(generated_answer, correct_answer)
                 f1 = compute_f1(generated_answer, correct_answer)
-                llm_judge = llm_judge_answer(question, correct_answer, generated_answer)
-                
                 exact_matches.append(em)
                 f1_scores.append(f1)
-                llm_judge_scores.append(llm_judge)
-            except:
-                continue
+    except Exception as e:
+        print(f"Batch generation failed: {e}")
+        generated_answers = []
+    
+    # OPTIMIZATION 3: Async LLM judge
+    llm_judge_scores = []
+    if generated_answers and len(generated_answers) == len(judge_data):
+        print("Running async LLM judge...")
+        try:
+            async def run_async_judge():
+                judge_tasks = [
+                    llm_judge_answer_async(question, correct_answer, generated_answer)
+                    for (question, correct_answer), generated_answer in zip(judge_data, generated_answers)
+                ]
+                return await batch_llm_judge(judge_tasks)
+            
+            # Run async LLM judge
+            llm_judge_scores = asyncio.run(run_async_judge())
+        except Exception as e:
+            print(f"Async LLM judge failed: {e}")
+            llm_judge_scores = [0.0] * len(generated_answers)
     
     return {
-        "Retrieval_Accuracy": np.mean(retrieval_hits),
-        "LLM_Loss": np.mean(llm_losses),
-        "Exact_Match": np.mean(exact_matches),
-        "F1_Score": np.mean(f1_scores),
-        "LLM_Judge": np.mean(llm_judge_scores),
+        "Retrieval_Accuracy": np.mean(retrieval_hits) if retrieval_hits else 0.0,
+        "LLM_Loss": np.mean(llm_losses) if llm_losses else 0.0,
+        "Exact_Match": np.mean(exact_matches) if exact_matches else 0.0,
+        "F1_Score": np.mean(f1_scores) if f1_scores else 0.0,
+        "LLM_Judge": np.mean(llm_judge_scores) if llm_judge_scores else 0.0,
         "Num_Examples": len(retrieval_hits)
     }
 
@@ -474,13 +631,21 @@ def validation_loop_msmarco(model, msmarco_qa_data, msmarco_corpus, llm, llm_tok
 
 def run_all_validation(model, squad_qa_data, squad_corpus, msmarco_qa_data, msmarco_corpus, llm, llm_tokenizer, bert_tokenizer, config):
     """Run both SQuAD and MS MARCO validation"""
-    squad_results = validation_loop_squad(model, squad_qa_data, squad_corpus, llm, llm_tokenizer, bert_tokenizer, config)
-    msmarco_results = validation_loop_msmarco(model, msmarco_qa_data, msmarco_corpus, llm, llm_tokenizer, bert_tokenizer, config)
+    # Move LLM to GPU for validation
+    llm.to(device)
     
-    return {
-        "squad": squad_results,
-        "msmarco": msmarco_results
-    }
+    try:
+        squad_results = validation_loop_squad(model, squad_qa_data, squad_corpus, llm, llm_tokenizer, bert_tokenizer, config)
+        msmarco_results = validation_loop_msmarco(model, msmarco_qa_data, msmarco_corpus, llm, llm_tokenizer, bert_tokenizer, config)
+        
+        return {
+            "squad": squad_results,
+            "msmarco": msmarco_results
+        }
+    finally:
+        # Move LLM back to CPU and clear cache
+        llm.cpu()
+        torch.cuda.empty_cache()
 
 
 def train_standard_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarco_qa_data, msmarco_corpus, llm, llm_tokenizer, bert_tokenizer, config):
@@ -508,11 +673,20 @@ def train_standard_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarco
         for i in tqdm(range(0, len(soft_train_data), config["batch_size"]), desc=f"Epoch {epoch+1}"):
             batch_items = soft_train_data[i:i+config["batch_size"]]
             batch_loss = 0
+            valid_items = 0
             
-            for item in batch_items:
-                if should_skip_item(item):
-                    continue
-                
+            # Filter valid items and collect data for batching
+            valid_batch_items = [item for item in batch_items if not should_skip_item(item)]
+            if len(valid_batch_items) == 0:
+                continue
+            
+            # Collect all queries and passages for batch encoding
+            all_queries = []
+            all_pos_passages = []
+            all_neg_passages = []
+            item_metadata = []  # Track which passages belong to which item
+            
+            for item in valid_batch_items:
                 query = item['query']
                 passages = item['passages']['passage_text']
                 hard_labels = item['passages']['is_selected']
@@ -522,13 +696,47 @@ def train_standard_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarco
                 if not neg_indices:
                     continue
                 
-                query_emb = encode_texts([f"query: {query}"], model, bert_tokenizer, config["encode_max_length"])
-                pos_emb = encode_texts([f"passage: {passages[pos_idx]}"], model, bert_tokenizer, config["encode_max_length"])
-                neg_embs = encode_texts([f"passage: {passages[i]}" for i in neg_indices], model, bert_tokenizer, config["encode_max_length"])
+                valid_items += 1
                 
+                # Collect for batch encoding
+                all_queries.append(f"query: {query}")
+                all_pos_passages.append(f"passage: {passages[pos_idx]}")
+                
+                # Store negative passages and metadata
+                neg_passages_for_item = [f"passage: {passages[i]}" for i in neg_indices]
+                all_neg_passages.extend(neg_passages_for_item)
+                
+                item_metadata.append({
+                    'neg_start_idx': len(all_neg_passages) - len(neg_passages_for_item),
+                    'neg_count': len(neg_passages_for_item)
+                })
+            
+            if valid_items == 0:
+                continue
+            
+            # Batch encoding
+            query_embs = encode_texts(all_queries, model, bert_tokenizer, config["encode_max_length"]).to(device)
+            pos_embs = encode_texts(all_pos_passages, model, bert_tokenizer, config["encode_max_length"]).to(device)
+            neg_embs = encode_texts(all_neg_passages, model, bert_tokenizer, config["encode_max_length"]).to(device)
+            
+            # Loss computation
+            batch_loss = 0
+            
+            for i, metadata in enumerate(item_metadata):
+                # Get embeddings for this item
+                query_emb = query_embs[i:i+1]
+                pos_emb = pos_embs[i:i+1]
+                
+                # Get negative embeddings for this item
+                neg_start = metadata['neg_start_idx']
+                neg_end = neg_start + metadata['neg_count']
+                item_neg_embs = neg_embs[neg_start:neg_end]
+                
+                # Compute similarities
                 pos_sim = torch.sum(query_emb * pos_emb, dim=1)
-                neg_sims = torch.sum(query_emb.unsqueeze(1) * neg_embs, dim=2).squeeze(0)
+                neg_sims = torch.sum(query_emb.unsqueeze(1) * item_neg_embs, dim=2).squeeze(0)
                 
+                # InfoNCE loss
                 logits = torch.cat([pos_sim, neg_sims])
                 logits = logits / config["temperature"]
                 labels = torch.zeros(1, dtype=torch.long).to(device)
@@ -536,8 +744,21 @@ def train_standard_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarco
                 
                 batch_loss += loss
             
+            # Normalize by number of valid items
+            if valid_items > 0:
+                batch_loss = batch_loss / valid_items
+            
             wandb.log({"Contrastive loss": batch_loss}, step=train_step)
             
+            # Complete backward pass first to free gradients
+            if batch_loss > 0:
+                optimizer.zero_grad()
+                batch_loss.backward()
+                optimizer.step()
+                scheduler.step()
+                total_loss += batch_loss.item()
+            
+            # Now do validation with freed GPU memory
             if train_step % config["validation_frequency"] == 0:
                 model.eval()
                 val_results = run_all_validation(model, squad_qa_data, squad_corpus, msmarco_qa_data, msmarco_corpus, llm, llm_tokenizer, bert_tokenizer, config)
@@ -558,13 +779,6 @@ def train_standard_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarco
                 }
                 wandb.log(val_metrics, step=train_step)
             
-            if batch_loss > 0:
-                optimizer.zero_grad()
-                batch_loss.backward()
-                optimizer.step()
-                scheduler.step()
-                total_loss += batch_loss.item()
-            
             train_step += 1
         
         print(f"Epoch {epoch+1} Loss: {total_loss:.4f}")
@@ -572,6 +786,10 @@ def train_standard_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarco
     
     save_model(model, config)
     return model
+
+
+
+
 
 
 def train_converted_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarco_qa_data, msmarco_corpus, llm, llm_tokenizer, bert_tokenizer, config):
@@ -599,11 +817,20 @@ def train_converted_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarc
         for i in tqdm(range(0, len(soft_train_data), config["batch_size"]), desc=f"Epoch {epoch+1}"):
             batch_items = soft_train_data[i:i+config["batch_size"]]
             batch_loss = 0
+            valid_items = 0
             
-            for item in batch_items:
-                if should_skip_item(item):
-                    continue
-                
+            # Filter valid items and collect data for batching
+            valid_batch_items = [item for item in batch_items if not should_skip_item(item)]
+            if len(valid_batch_items) == 0:
+                continue
+            
+            # Collect all queries and passages for batch encoding
+            all_queries = []
+            all_pos_passages = []
+            all_neg_passages = []
+            item_metadata = []  # Track which passages belong to which item
+            
+            for item in valid_batch_items:
                 query = item['query']
                 passages = item['passages']['passage_text']
                 soft_labels = item['passages']['soft_labels']
@@ -616,13 +843,47 @@ def train_converted_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarc
                 if not neg_indices:
                     continue
                 
-                query_emb = encode_texts([f"query: {query}"], model, bert_tokenizer, config["encode_max_length"])
-                pos_emb = encode_texts([f"passage: {passages[pos_idx]}"], model, bert_tokenizer, config["encode_max_length"])
-                neg_embs = encode_texts([f"passage: {passages[i]}" for i in neg_indices], model, bert_tokenizer, config["encode_max_length"])
+                valid_items += 1
                 
+                # Collect for batch encoding
+                all_queries.append(f"query: {query}")
+                all_pos_passages.append(f"passage: {passages[pos_idx]}")
+                
+                # Store negative passages and metadata
+                neg_passages_for_item = [f"passage: {passages[i]}" for i in neg_indices]
+                all_neg_passages.extend(neg_passages_for_item)
+                
+                item_metadata.append({
+                    'neg_start_idx': len(all_neg_passages) - len(neg_passages_for_item),
+                    'neg_count': len(neg_passages_for_item)
+                })
+            
+            if valid_items == 0:
+                continue
+            
+            # Batch encoding
+            query_embs = encode_texts(all_queries, model, bert_tokenizer, config["encode_max_length"]).to(device)
+            pos_embs = encode_texts(all_pos_passages, model, bert_tokenizer, config["encode_max_length"]).to(device)
+            neg_embs = encode_texts(all_neg_passages, model, bert_tokenizer, config["encode_max_length"]).to(device)
+            
+            # Loss computation
+            batch_loss = 0
+            
+            for i, metadata in enumerate(item_metadata):
+                # Get embeddings for this item
+                query_emb = query_embs[i:i+1]
+                pos_emb = pos_embs[i:i+1]
+                
+                # Get negative embeddings for this item
+                neg_start = metadata['neg_start_idx']
+                neg_end = neg_start + metadata['neg_count']
+                item_neg_embs = neg_embs[neg_start:neg_end]
+                
+                # Compute similarities
                 pos_sim = torch.sum(query_emb * pos_emb, dim=1)
-                neg_sims = torch.sum(query_emb.unsqueeze(1) * neg_embs, dim=2).squeeze(0)
+                neg_sims = torch.sum(query_emb.unsqueeze(1) * item_neg_embs, dim=2).squeeze(0)
                 
+                # InfoNCE loss
                 logits = torch.cat([pos_sim, neg_sims])
                 logits = logits / config["temperature"]
                 labels = torch.zeros(1, dtype=torch.long).to(device)
@@ -630,8 +891,21 @@ def train_converted_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarc
                 
                 batch_loss += loss
             
+            # Normalize by number of valid items
+            if valid_items > 0:
+                batch_loss = batch_loss / valid_items
+            
             wandb.log({"Contrastive loss": batch_loss}, step=train_step)
             
+            # Complete backward pass first to free gradients
+            if batch_loss > 0:
+                optimizer.zero_grad()
+                batch_loss.backward()
+                optimizer.step()
+                scheduler.step()
+                total_loss += batch_loss.item()
+            
+            # Now do validation with freed GPU memory
             if train_step % config["validation_frequency"] == 0:
                 model.eval()
                 val_results = run_all_validation(model, squad_qa_data, squad_corpus, msmarco_qa_data, msmarco_corpus, llm, llm_tokenizer, bert_tokenizer, config)
@@ -651,13 +925,6 @@ def train_converted_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarc
                     "MSMARCO LLM_Judge": val_results['msmarco']['LLM_Judge'],
                 }
                 wandb.log(val_metrics, step=train_step)
-            
-            if batch_loss > 0:
-                optimizer.zero_grad()
-                batch_loss.backward()
-                optimizer.step()
-                scheduler.step()
-                total_loss += batch_loss.item()
             
             train_step += 1
         
@@ -691,7 +958,6 @@ def train_kl_soft_infonce_batched(soft_train_data, squad_qa_data, squad_corpus, 
         
         for i in tqdm(range(0, len(soft_train_data), config["batch_size"]), desc=f"Epoch {epoch+1}"):
             batch_items = soft_train_data[i:i+config["batch_size"]]
-            
             batch_items = [item for item in batch_items if not should_skip_item(item)]
             if len(batch_items) == 0:
                 continue
@@ -713,7 +979,6 @@ def train_kl_soft_infonce_batched(soft_train_data, squad_qa_data, squad_corpus, 
             
             query_embs = encode_texts(queries, model, bert_tokenizer, config["encode_max_length"]).to(device)
             passage_embs = encode_texts(passages, model, bert_tokenizer, config["encode_max_length"]).to(device)
-            
             passage_emb_groups = torch.split(passage_embs, passage_counts, dim=0)
             
             batch_loss = 0
@@ -735,10 +1000,21 @@ def train_kl_soft_infonce_batched(soft_train_data, squad_qa_data, squad_corpus, 
                 loss = loss + alpha * hinge_loss
                 batch_loss += loss
             
-            batch_loss = batch_loss / len(batch_items)
+            # Normalize by number of batch items
+            if len(batch_items) > 0:
+                batch_loss = batch_loss / len(batch_items)
             
             wandb.log({"KL loss": batch_loss}, step=train_step)
             
+            # Complete backward pass first to free gradients
+            if batch_loss > 0:
+                optimizer.zero_grad()
+                batch_loss.backward()
+                optimizer.step()
+                scheduler.step()
+                total_loss += batch_loss.item()
+            
+            # Now do validation with freed GPU memory
             if train_step % config["validation_frequency"] == 0:
                 model.eval()
                 val_results = run_all_validation(model, squad_qa_data, squad_corpus, msmarco_qa_data, msmarco_corpus, llm, llm_tokenizer, bert_tokenizer, config)
@@ -759,12 +1035,6 @@ def train_kl_soft_infonce_batched(soft_train_data, squad_qa_data, squad_corpus, 
                 }
                 wandb.log(val_metrics, step=train_step)
             
-            optimizer.zero_grad()
-            batch_loss.backward()
-            optimizer.step()
-            scheduler.step()
-            
-            total_loss += batch_loss.item()
             train_step += 1
         
         print(f"Epoch {epoch+1} total loss: {total_loss:.4f}")
@@ -805,8 +1075,12 @@ def main():
     ms_marco_dataset = load_dataset(config["dataset_name"])
     soft_train_data_full = list(ms_marco_dataset["train"])
     
-    soft_train_data = soft_train_data_full[:config["num_data_examples"]]
-    print(f"Using {len(soft_train_data)} training examples")
+    if config["num_data_examples"] is None or config["num_data_examples"] == -1:
+        soft_train_data = soft_train_data_full
+        print(f"Using all {len(soft_train_data)} training examples")
+    else:
+        soft_train_data = soft_train_data_full[:config["num_data_examples"]]
+        print(f"Using {len(soft_train_data)} training examples")
     
     # Prepare MS MARCO validation data
     msmarco_qa_data, msmarco_corpus = preprocess_msmarco_validation(config, config["msmarco_val_examples"])
@@ -818,6 +1092,7 @@ def main():
         config=config
     )
     
+    print(f"Training model with method: {config['training_method']}")
     # Train model based on method
     if config["training_method"] == "standard_infonce":
         model = train_standard_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarco_qa_data, msmarco_corpus, llm, llm_tokenizer, bert_tokenizer, config)
@@ -827,16 +1102,46 @@ def main():
         model = train_kl_soft_infonce_batched(soft_train_data, squad_qa_data, squad_corpus, msmarco_qa_data, msmarco_corpus, llm, llm_tokenizer, bert_tokenizer, config)
     else:
         raise ValueError(f"Unknown training method: {config['training_method']}")
+
     
     # Final evaluation
-    squad_test_start = config["squad_eval_examples"]
-    squad_test_end = squad_test_start + config["squad_test_examples"]
-    squad_test_set = squad_qa_data[squad_test_start:squad_test_end]
+    # Move LLM to GPU for final evaluation
+    llm.to(device)
     
-    squad_embeddings = precompute_squad_embeddings(squad_corpus, model, bert_tokenizer, config)
-    squad_results = evaluate_squad(model, squad_test_set, squad_embeddings, squad_corpus, llm, llm_tokenizer, bert_tokenizer, config)
+    try:
+        squad_test_start = config["squad_eval_examples"]
+        squad_test_end = squad_test_start + config["squad_test_examples"]
+        squad_test_set = squad_qa_data[squad_test_start:squad_test_end]
+        
+        squad_embeddings = precompute_squad_embeddings(squad_corpus, model, bert_tokenizer, config)
+        squad_results = evaluate_squad(model, squad_test_set, squad_embeddings, squad_corpus, llm, llm_tokenizer, bert_tokenizer, config)
+        
+        # MS MARCO final evaluation
+        msmarco_test_qa_data, msmarco_test_corpus = preprocess_msmarco_validation(config, config["msmarco_test_examples"])
+        msmarco_embeddings = precompute_squad_embeddings(msmarco_test_corpus, model, bert_tokenizer, config)
+        msmarco_results = evaluate_squad(model, msmarco_test_qa_data, msmarco_embeddings, msmarco_test_corpus, llm, llm_tokenizer, bert_tokenizer, config)
+    finally:
+        # Move LLM back to CPU and clear cache
+        llm.cpu()
+        torch.cuda.empty_cache()
     
-    print("Final results:", squad_results)
+    # Log final results
+    final_results = {
+        "Final_SQuAD_F1": squad_results['F1_Score'],
+        "Final_SQuAD_EM": squad_results['Exact_Match'],
+        "Final_SQuAD_Retrieval": squad_results['Retrieval_Accuracy'],
+        "Final_SQuAD_LLM_Loss": squad_results['LLM_Loss'],
+        "Final_SQuAD_LLM_Judge": squad_results['LLM_Judge'],
+        "Final_MSMARCO_F1": msmarco_results['F1_Score'],
+        "Final_MSMARCO_EM": msmarco_results['Exact_Match'],
+        "Final_MSMARCO_Retrieval": msmarco_results['Retrieval_Accuracy'],
+        "Final_MSMARCO_LLM_Loss": msmarco_results['LLM_Loss'],
+        "Final_MSMARCO_LLM_Judge": msmarco_results['LLM_Judge'],
+    }
+    wandb.log(final_results)
+    
+    print("Final SQuAD results:", squad_results)
+    print("Final MS MARCO results:", msmarco_results)
     
     # Cleanup
     del model, squad_embeddings

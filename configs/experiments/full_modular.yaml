@@ -1,0 +1,33 @@
+# Full Modular Training Experiment
+# Uses multiple loss components: KL, MSE, Margin, and InfoNCE
+
+base_config: "../default.yaml"
+
+# Experiment identification
+logging:
+  run_name: "full-modular-experiment"
+
+# Modular training with multiple loss components
+method:
+  training_method: "modular"
+  loss_components:
+    kl: 0.4                # KL divergence loss
+    mse: 0.2              # MSE loss between similarities
+    margin: 0.3           # Margin hinge loss
+    converted_infonce: 0.1 # InfoNCE with converted labels
+
+# Loss hyperparameters for all components
+loss_params:
+  teacher_temp: 0.01        # For KL loss
+  student_temp: 0.01        # For KL loss
+  margin: 3.0              # For margin loss
+  infonce_temperature: 0.02 # For InfoNCE components
+
+# Training settings for complex loss combination
+training:
+  batch_size: 16
+  learning_rate: 1.5e-5    # Slightly lower LR for stability
+  num_epochs: 3            # More epochs for complex training
+  validation_frequency: 500 # More frequent validation
+  gradient_clipping: true
+  grad_clip_max_norm: 0.5  # Tighter gradient clipping 

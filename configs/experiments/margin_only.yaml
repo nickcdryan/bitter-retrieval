@@ -1,0 +1,25 @@
+# Margin Loss Only Experiment
+# Uses only margin hinge loss for contrastive learning
+
+base_config: "../default.yaml"
+
+# Experiment identification
+logging:
+  run_name: "margin-only-experiment"
+
+# Margin-only modular training
+method:
+  training_method: "modular"
+  loss_components:
+    margin: 1.0  # Pure margin hinge loss
+
+# Margin-specific hyperparameters
+loss_params:
+  margin: 3.0  # Margin for hinge loss
+
+# Training settings optimized for margin loss
+training:
+  batch_size: 16
+  learning_rate: 2.0e-5
+  num_epochs: 2
+  validation_frequency: 1000 

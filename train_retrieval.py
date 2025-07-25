@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+# OLD: end to end training script
 # poetry run python train_retrieval.py
 
 import torch
@@ -30,64 +31,66 @@ def get_config():
     """Training configuration"""
     return {
 
-        # Logging
+        # LOGGING
         "wandb_project": "bitter-retrieval",
-        "run_name": "kl-margin:3-gradclip-temp.02-BERT-fulltraining-epoch:2-batch:32",
+        "run_name": "standard_infonce-gradclip-temp.02-Nomic-fulltraining-epoch:2-batch:16",
 
-        # Models
+        # MODELS
+        # Decoder LLM for evaluation
         "llm_model": "Qwen/Qwen3-8B-Base", 
-        "encoder_model": "google-bert/bert-base-uncased", #"nomic-ai/nomic-embed-text-v1-unsupervised",
+        # Embedding model trained for retrieval
+        "encoder_model": "nomic-ai/nomic-embed-text-v1-unsupervised", #"google-bert/bert-base-uncased", #
         
-        # Max lengths
+
+        # DATA PARAMS
+        "dataset_name": "nickcdryan/ms_marco_softlabel_Qwen3-8B-Base_bf16",
+        "num_data_examples": -1,  # Set to None or -1 to use all available training examples
         "encode_max_length": 512,  # BERT base max sequence length 512
         "llm_max_length": 1024,
         "generation_max_length": 900,
         "generation_max_tokens": 40,
-
-        # Data params
-        "dataset_name": "nickcdryan/ms_marco_softlabel_Qwen3-8B-Base_bf16",
-        "num_data_examples": -1,  # Set to None or -1 to use all available training examples
         
-        # Training params
-        "batch_size": 32,
+        # TRAINING PARAMS
+        "batch_size": 16,
         "learning_rate": 2e-5,
         "num_epochs": 2,  # Just 1 epoch for testing
-        "warmup_steps": 200,  # Number of warmup steps
-        "validation_frequency": 500,  # Validate more frequently
-        
-        # Learning rate scheduling
+        "validation_frequency": 1000, # steps
+        "gradient_clipping": True,  # Enable/disable gradient clipping
+        "grad_clip_max_norm": 1.0,  # Maximum gradient norm
         "use_warmup": True,  # Enable/disable warmup
+        "warmup_steps": 200,  # Number of warmup steps
         "use_lr_decay": False,  # Enable/disable linear decay after warmup
         # Examples:
         # use_warmup=True, use_lr_decay=False: warmup then constant LR
         # use_warmup=True, use_lr_decay=True: warmup then linear decay
         # use_warmup=False, use_lr_decay=True: linear decay from start
         # use_warmup=False, use_lr_decay=False: constant LR throughout
-        
-        # Gradient clipping
-        "gradient_clipping": True,  # Enable/disable gradient clipping
-        "grad_clip_max_norm": 1.0,  # Maximum gradient norm
-        
-        # Training method and params
+
+
+        # TRAINING METHOD AND PARAMS
         "training_method": "modular",  # "standard_infonce", "converted_infonce", "kl_soft_infonce", "modular"
-        "temperature": 0.02, # for standard and converted
-        "teacher_temp": .02, #0.01, # for soft kl and modular
-        "student_temp": .02, #0.01, # for soft kl and modular
-        "margin": 3.0, # for soft kl
-        
-        # For modular training method - loss component weights
+
+        # MODULAR TRAINING METHOD - LOSS COMPONENT WEIGHTS
+        # Available loss components: "kl", "mse", "margin", "standard_infonce", "converted_infonce"
+        # Enter a dictionary of loss component weights:
         # Examples:
         # "loss_components": {"mse": 1.0},  # MSE only
         # "loss_components": {"kl": 0.5, "converted_infonce": 0.5},  # KL + InfoNCE
         # "loss_components": {"kl": 0.8, "mse": 0.2},  # KL + MSE
         # "loss_components": {"margin": 1.0},  # Margin loss only
-        "loss_components": {"kl": 0.5, "margin": 0.5},  # KL + Margin
-        # "loss_components": {"standard_infonce": 1.0},  # Standard InfoNCE (equivalent to train_standard_infonce)
+        # "loss_components": {"kl": 0.5, "margin": 0.5},  # KL + Margin
+        "loss_components": {"standard_infonce": 1.0},  # Standard InfoNCE (equivalent to train_standard_infonce)
         # "loss_components": {"standard_infonce": 0.5, "converted_infonce": 0.5},  # Both InfoNCE types
         # "loss_components": {"kl": 1.0},  # Default: KL only
+
+        # LOSS FUNCTION HPARAMS
+        "infonce_temperature": 0.02, # for standard and converted
+        "teacher_temp": .01, # for soft kl and modular
+        "student_temp": .01, # for soft kl and modular
+        "margin": 3.0, # for margin loss
         
 
-
+        # EVALUATION DATASETS
         # build our corpus, including every single passages belonging to each squad_num_titles to make retrieval harder
         # end up with squad_questions_per_title * squad_num_titles total questions, and corpus is about 45 * squad_num_titles passages
         "squad_num_titles": 150,     # number of unique articles (with a number of questions and contexts per article)
@@ -97,22 +100,12 @@ def get_config():
         "msmarco_val_examples": 100,
         "msmarco_test_examples": 500,
 
-
-        # LITE!
-        # build our corpus, including every single passages belonging to each squad_num_titles to make retrieval harder
-        # end up with squad_questions_per_title * squad_num_titles total questions, and corpus is about 45 * squad_num_titles passages
-        # "squad_num_titles": 10,     # number of unique articles (with a number of questions and contexts per article)
-        # "squad_questions_per_title": 5, # how many questions associated with each article
-        # "squad_eval_examples": 5, # Small validation sets
-        # "squad_test_examples": 5,
-        # "msmarco_val_examples": 5,
-        # "msmarco_test_examples": 5,
         
-        # Model saving
+        # MODEL SAVING
         "save_model": True,
         "model_save_path": "models/",
         
-        # Tokens (from environment)
+        # API TOKENS (from environment)
         "hf_token": os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN"),
         "wandb_key": os.getenv("WANDB_API_KEY"),
         "gemini_key": os.getenv("GEMINI_API_KEY"),
@@ -777,7 +770,7 @@ def train_standard_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarco
                 
                 # InfoNCE loss
                 logits = torch.cat([pos_sim, neg_sims])
-                logits = logits / config["temperature"]
+                logits = logits / config["infonce_temperature"]
                 labels = torch.zeros(1, dtype=torch.long).to(device)
                 loss = F.cross_entropy(logits.unsqueeze(0), labels)
                 
@@ -934,7 +927,7 @@ def train_converted_infonce(soft_train_data, squad_qa_data, squad_corpus, msmarc
                 
                 # InfoNCE loss
                 logits = torch.cat([pos_sim, neg_sims])
-                logits = logits / config["temperature"]
+                logits = logits / config["infonce_temperature"]
                 labels = torch.zeros(1, dtype=torch.long).to(device)
                 loss = F.cross_entropy(logits.unsqueeze(0), labels)
                 
@@ -1132,7 +1125,7 @@ def compute_converted_infonce_loss(student_similarities, teacher_soft_labels, co
     if len(neg_sims) == 0:
         return torch.tensor(0.0, device=student_similarities.device)
     
-    logits = torch.cat([pos_sim, neg_sims]) / config["temperature"]
+    logits = torch.cat([pos_sim, neg_sims]) / config["infonce_temperature"]
     labels = torch.zeros(1, dtype=torch.long, device=student_similarities.device)
     loss = F.cross_entropy(logits.unsqueeze(0), labels)
     return loss
@@ -1216,7 +1209,7 @@ def compute_standard_infonce_loss(student_similarities, teacher_hard_labels, con
     neg_sims = student_similarities[neg_indices]
     
     # Standard InfoNCE loss
-    logits = torch.cat([pos_sim, neg_sims]) / config["temperature"]
+    logits = torch.cat([pos_sim, neg_sims]) / config["infonce_temperature"]
     labels = torch.zeros(1, dtype=torch.long, device=student_similarities.device)
     loss = F.cross_entropy(logits.unsqueeze(0), labels)
     return loss
@@ -1376,7 +1369,7 @@ def train_modular_loss(soft_train_data, squad_qa_data, squad_corpus, msmarco_qa_
                     epoch_loss_components[key] += value
             
             # Validation
-            if train_step % config["validation_frequency"] == 0 and train_step > 0:
+            if train_step % config["validation_frequency"] == 0:
                 model.eval()
                 val_results = run_all_validation(model, squad_qa_data, squad_corpus, msmarco_qa_data, msmarco_corpus, llm, llm_tokenizer, bert_tokenizer, config)
                 validation_results.append(val_results)

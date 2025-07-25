@@ -1,0 +1,29 @@
+# KL + Margin Loss Experiment
+# Combines KL divergence loss with margin hinge loss
+
+# Inherit from default config and override specific settings
+base_config: "../default.yaml"
+
+# Experiment identification
+logging:
+  run_name: "kl-margin-experiment"
+
+# Training method configuration
+method:
+  training_method: "modular"
+  loss_components:
+    kl: 0.5      # KL divergence loss weight
+    margin: 0.5  # Margin hinge loss weight
+
+# Loss hyperparameters
+loss_params:
+  teacher_temp: 0.01  # Temperature for teacher (LLM) distribution
+  student_temp: 0.01  # Temperature for student (retriever) distribution  
+  margin: 3.0         # Margin for hinge loss
+
+# Training settings optimized for this combination
+training:
+  batch_size: 16
+  learning_rate: 2.0e-5
+  num_epochs: 2
+  validation_frequency: 1000 

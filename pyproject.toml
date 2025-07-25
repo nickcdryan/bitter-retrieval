@@ -1,7 +1,7 @@
 [project]
 name = "bitter-retrieval"
 version = "0.1.0"
-description = ""
+description = "A modular training framework for retrieval models with LLM-guided signals and soft labels"
 authors = [
     {name = "Nick Ryan",email = "nickcdryan@gmail.com"}
 ]
@@ -23,11 +23,13 @@ dependencies = [
     "tqdm (>=4.67.1,<5.0.0)",
     "psutil (>=7.0.0,<8.0.0)",
     "google-generativeai (>=0.8.0,<1.0.0)",
-    "google (>=3.0.0,<4.0.0)"
+    "google (>=3.0.0,<4.0.0)",
+    "pyyaml (>=6.0.0,<7.0.0)",
+    "tree (>=0.2.4,<0.3.0)"
 ]
 
 [tool.poetry]
-packages = [{include = "bitter_retrieval", from = "src"}]
+packages = [{include = "bitter_retrieval"}]
 
 
 [[tool.poetry.source]]

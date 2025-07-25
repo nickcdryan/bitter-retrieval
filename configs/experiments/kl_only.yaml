@@ -1,0 +1,26 @@
+# KL Divergence Only Experiment
+# Uses only KL divergence loss for knowledge distillation
+
+base_config: "../default.yaml"
+
+# Experiment identification
+logging:
+  run_name: "kl-only-experiment"
+
+# KL-only modular training
+method:
+  training_method: "modular"
+  loss_components:
+    kl: 1.0  # Pure KL divergence loss
+
+# KL-specific hyperparameters
+loss_params:
+  teacher_temp: 0.01  # Temperature for teacher (LLM) distribution
+  student_temp: 0.01  # Temperature for student (retriever) distribution
+
+# Training settings optimized for KL loss
+training:
+  batch_size: 16
+  learning_rate: 2.0e-5
+  num_epochs: 2
+  validation_frequency: 1000 

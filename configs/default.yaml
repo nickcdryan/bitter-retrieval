@@ -1,0 +1,72 @@
+# Default configuration for bitter retrieval training
+# This serves as the base configuration that can be overridden by experiment-specific configs
+
+# Logging configuration
+logging:
+  wandb_project: "bitter-retrieval"
+  run_name: "default-run"
+
+# Model configuration
+models:
+  # Decoder LLM for evaluation
+  llm_model: "Qwen/Qwen3-8B-Base"
+  # Embedding model trained for retrieval  
+  encoder_model: "nomic-ai/nomic-embed-text-v1-unsupervised"
+
+# Data configuration
+data:
+  dataset_name: "nickcdryan/ms_marco_softlabel_Qwen3-8B-Base_bf16"
+  num_data_examples: -1  # -1 to use all available training examples
+  encode_max_length: 512  # BERT base max sequence length
+  llm_max_length: 1024
+  generation_max_length: 900
+  generation_max_tokens: 40
+
+# Training parameters
+training:
+  batch_size: 16
+  learning_rate: 2.0e-5
+  num_epochs: 2
+  validation_frequency: 1000  # steps
+  gradient_clipping: true
+  grad_clip_max_norm: 1.0
+  use_warmup: true
+  warmup_steps: 200
+  use_lr_decay: false
+
+# Training method and loss configuration
+method:
+  training_method: "modular"  # Options: standard_infonce, converted_infonce, kl_soft_infonce, modular
+  
+  # Loss component weights for modular training
+  # Available components: kl, mse, margin, standard_infonce, converted_infonce
+  loss_components:
+    kl: 0.5
+    margin: 0.5
+
+# Loss function hyperparameters
+loss_params:
+  infonce_temperature: 0.02  # for standard and converted InfoNCE
+  teacher_temp: 0.01  # for soft KL and modular
+  student_temp: 0.01  # for soft KL and modular  
+  margin: 3.0  # for margin loss
+
+# Evaluation datasets configuration
+evaluation:
+  squad_num_titles: 150
+  squad_questions_per_title: 5
+  squad_eval_examples: 100
+  squad_test_examples: 500
+  msmarco_val_examples: 100
+  msmarco_test_examples: 500
+
+# Model saving
+saving:
+  save_model: true
+  model_save_path: "models/"
+
+# API tokens (loaded from environment variables)
+# Set these in your .env file:
+# - HUGGINGFACE_TOKEN or HF_TOKEN
+# - WANDB_API_KEY  
+# - GEMINI_API_KEY 

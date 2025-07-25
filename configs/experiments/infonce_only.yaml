@@ -1,0 +1,24 @@
+# Standard InfoNCE Experiment
+# Uses only the standard InfoNCE contrastive loss
+
+base_config: "../default.yaml"
+
+# Experiment identification
+logging:
+  run_name: "infonce-standard"
+
+# Use standard InfoNCE training method
+method:
+  training_method: "standard_infonce"
+  # No loss_components needed for non-modular methods
+
+# InfoNCE specific parameters
+loss_params:
+  infonce_temperature: 0.02  # Temperature for InfoNCE loss
+
+# Training settings
+training:
+  batch_size: 16
+  learning_rate: 2.0e-5
+  num_epochs: 2
+  validation_frequency: 1000 

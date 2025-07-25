@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+# python push_to_huggingface.py
+
 """
 Simple utility to push trained models to HuggingFace Hub
 """
@@ -8,9 +10,17 @@ import os
 from pathlib import Path
 from huggingface_hub import HfApi, login
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print("✅ Loaded .env file")
+except ImportError:
+    print("python-dotenv not installed - using system environment variables only")
+
 # CONFIGURE THESE VARIABLES
-MODEL_PATH = "models/converted_infonce-BERT-fulltraining-epoch:2-batch:32"  # Change this to your model path
-REPO_NAME = "bitter-retrieval-converted-infonce-bert"  # Change this to your desired repo name
+MODEL_PATH = "models/kl-margin:3-gradclip-temp.01-Nomic-fulltraining-epoch:2-batch:16_modular_kl_0.5_margin_0.5/"  # Change this to your model path
+REPO_NAME = "bitter-retrieval-kl-margin-nomic"  # Change this to your desired repo name
 PRIVATE = False  # Set to True if you want a private repo
 
 def push_model():

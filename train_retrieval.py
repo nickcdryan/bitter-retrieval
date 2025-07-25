@@ -29,6 +29,11 @@ except ImportError:
 def get_config():
     """Training configuration"""
     return {
+
+        # Logging
+        "wandb_project": "bitter-retrieval",
+        "run_name": "kl-margin:3-gradclip-temp.02-BERT-fulltraining-epoch:2-batch:32",
+
         # Models
         "llm_model": "Qwen/Qwen3-8B-Base", 
         "encoder_model": "google-bert/bert-base-uncased", #"nomic-ai/nomic-embed-text-v1-unsupervised",
@@ -38,6 +43,10 @@ def get_config():
         "llm_max_length": 1024,
         "generation_max_length": 900,
         "generation_max_tokens": 40,
+
+        # Data params
+        "dataset_name": "nickcdryan/ms_marco_softlabel_Qwen3-8B-Base_bf16",
+        "num_data_examples": -1,  # Set to None or -1 to use all available training examples
         
         # Training params
         "batch_size": 32,
@@ -62,24 +71,22 @@ def get_config():
         # Training method and params
         "training_method": "modular",  # "standard_infonce", "converted_infonce", "kl_soft_infonce", "modular"
         "temperature": 0.02, # for standard and converted
-        "teacher_temp": .01, #0.01, # for soft kl and modular
-        "student_temp": .01, #0.01, # for soft kl and modular
+        "teacher_temp": .02, #0.01, # for soft kl and modular
+        "student_temp": .02, #0.01, # for soft kl and modular
         "margin": 3.0, # for soft kl
         
         # For modular training method - loss component weights
         # Examples:
         # "loss_components": {"mse": 1.0},  # MSE only
-        "loss_components": {"kl": 0.5, "converted_infonce": 0.5},  # KL + InfoNCE
+        # "loss_components": {"kl": 0.5, "converted_infonce": 0.5},  # KL + InfoNCE
         # "loss_components": {"kl": 0.8, "mse": 0.2},  # KL + MSE
         # "loss_components": {"margin": 1.0},  # Margin loss only
-        # "loss_components": {"kl": 0.6, "margin": 0.4},  # KL + Margin
+        "loss_components": {"kl": 0.5, "margin": 0.5},  # KL + Margin
         # "loss_components": {"standard_infonce": 1.0},  # Standard InfoNCE (equivalent to train_standard_infonce)
         # "loss_components": {"standard_infonce": 0.5, "converted_infonce": 0.5},  # Both InfoNCE types
-        #"loss_components": {"kl": 1.0},  # Default: KL only
+        # "loss_components": {"kl": 1.0},  # Default: KL only
         
-        # Data params
-        "dataset_name": "nickcdryan/ms_marco_softlabel_Qwen3-8B-Base_bf16",
-        "num_data_examples": -1,  # Set to None or -1 to use all available training examples
+
 
         # build our corpus, including every single passages belonging to each squad_num_titles to make retrieval harder
         # end up with squad_questions_per_title * squad_num_titles total questions, and corpus is about 45 * squad_num_titles passages
@@ -100,12 +107,6 @@ def get_config():
         # "squad_test_examples": 5,
         # "msmarco_val_examples": 5,
         # "msmarco_test_examples": 5,
-        
-        # Logging
-        "wandb_project": "bitter-retrieval",
-        "run_name": "kl_soft-sumreduction-convertedinfonce-BERT-fulltraining-epoch:2-batch:32",
-        #"run_name": "kl_soft-sumreduction-gradclip-lrdecay-fulltraining-epoch:2-batch:32",
-
         
         # Model saving
         "save_model": True,

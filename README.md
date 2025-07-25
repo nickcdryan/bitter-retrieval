@@ -19,7 +19,7 @@ The goal is to directly optimize for downstream performance rather than proxy me
 ### Experimental Setup
 - **Training Data**: 80k MS MARCO examples
 - **Hardware**: 1x H100, 2 epochs
-- **Base Models**: BERT-base-uncased, nomic-embed-text-v1-unsupervised
+- **Base Models**: [BERT-base-uncased](https://huggingface.co/google-bert/bert-base-uncased), [nomic-embed-text-v1-unsupervised](https://huggingface.co/nomic-ai/nomic-embed-text-v1-unsupervised)
 - **Evaluation**: MS MARCO test data sample. For each test data example, the question and top retrieved context are passed into a newly initialized decoder model that produces an answer. LLM-as-judge (Gemini 2.0) is used to evaluate the correctness of the answer against the ground truth provided in the original dataset. Retrieval accuracy measures whether the retrieved context matches the context marked as "best" by human annotators in the original MS MARCO dataset.
 
 ### Results: Same LLM (Qwen 3-8B for both labeling and evaluation)
@@ -31,7 +31,7 @@ The goal is to directly optimize for downstream performance rather than proxy me
 | **Nomic Embed** | Standard InfoNCE | 47.6% | 40.0% |
 | **Nomic Embed** | **Soft Labels (Ours)** | **47.8%** ✅ | 33.6% |
 
-### Results: Cross-LLM Generalization (Qwen labeling → Llama 3.1-8B evaluation)
+### Results: Cross-LLM Generalization (Qwen labeling → Llama 3.1-8B evaluation) (Nomic)
 
 | Training Method | Answer Accuracy ↑ | Retrieval Accuracy |
 |----------------|-------------------|-------------------|

@@ -103,6 +103,7 @@ We've created and published a soft-labeled version of MS MARCO v1.1 with ~100k e
 - **Training Data**: 80k MS MARCO examples
 - **Hardware**: 1x H100, 2 epochs
 - **Base Models**: BERT-base-uncased, nomic-embed-text-v1-unsupervised
+- **Evaluation**: MS MARCO test data sample, LLM-as-judge evaluation with Gemini 2.0
 
 ### Results: Same LLM (Qwen 3-8B for both labeling and evaluation)
 

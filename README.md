@@ -14,6 +14,44 @@ This framework addresses this by:
 
 The goal is to directly optimize for downstream performance rather than proxy metrics, testing whether this approach produces better retrieval models for LLM-assisted question answering.
 
+## 📊 Preliminary Results
+
+### Experimental Setup
+- **Training Data**: 80k MS MARCO examples
+- **Hardware**: 1x H100, 2 epochs
+- **Base Models**: BERT-base-uncased, nomic-embed-text-v1-unsupervised
+- **Evaluation**: MS MARCO test data sample. For each test data example, the question and top retrieved context are passed into a newly initialized decoder model that produces an answer. LLM-as-judge (Gemini 2.0) is used to evaluate the correctness of the answer against the ground truth provided in the original dataset. Retrieval accuracy measures whether the retrieved context matches the context marked as "best" by human annotators in the original MS MARCO dataset.
+
+### Results: Same LLM (Qwen 3-8B for both labeling and evaluation)
+
+| Model | Training Method | Answer Accuracy ↑ | Retrieval Accuracy |
+|-------|----------------|-------------------|-------------------|
+| **BERT Base** | Standard InfoNCE | 45.8% | 30.4% |
+| **BERT Base** | **Soft Labels (Ours)** | **47.0%** ✅ | 29.6% |
+| **Nomic Embed** | Standard InfoNCE | 47.6% | 40.0% |
+| **Nomic Embed** | **Soft Labels (Ours)** | **47.8%** ✅ | 33.6% |
+
+### Results: Cross-LLM Generalization (Qwen labeling → Llama 3.1-8B evaluation)
+
+| Training Method | Answer Accuracy ↑ | Retrieval Accuracy |
+|----------------|-------------------|-------------------|
+| Standard InfoNCE | 33.8% | 38.2% |
+| **Soft Labels (Ours)** | **37.6%** ✅ | 33.6% |
+
+### Key Findings
+
+1. **Validation of Core Hypothesis**: Models trained on soft labels achieve better downstream LLM performance despite sometimes lower retrieval accuracy on human labels, demonstrating that the human labels are suboptimal.
+2. **Cross-LLM Generalization**: Models trained with labels from one LLM (Qwen) generalize well to different LLMs (Llama) during evaluation, often performing even better
+3. **Human Label Limitations**: 21.9% disagreement between human annotations and actual LLM utility demonstrates the noise in traditional training data
+
+### Dataset
+We've created and published a soft-labeled version of MS MARCO v1.1 with ~100k examples labeled using the approach described above:
+- **Dataset**: [nickcdryan/ms_marco_softlabel_Qwen3-8B-Base_bf16](https://huggingface.co/datasets/nickcdryan/ms_marco_softlabel_Qwen3-8B-Base_bf16)
+- **Labeling Model**: Qwen/Qwen3-8B-Base (bf16)
+- **Key Finding**: 21.9% disagreement rate between human-labeled "best" passages and passages that actually produce lowest LLM loss
+
+*Note: This project is actively under development. Results are preliminary and based on initial experiments.*
+
 ## 🚀 Quick Start
 
 ### Setup
@@ -91,43 +129,6 @@ bitter-retrieval/
 - **Datasets**: SQuAD, MS MARCO with configurable corpus sizes
 - **Async Processing**: Batch generation and parallel LLM evaluation
 
-## 📊 Preliminary Results
-
-### Dataset
-We've created and published a soft-labeled version of MS MARCO v1.1 with ~100k examples labeled using the approach described above:
-- **Dataset**: [nickcdryan/ms_marco_softlabel_Qwen3-8B-Base_bf16](https://huggingface.co/datasets/nickcdryan/ms_marco_softlabel_Qwen3-8B-Base_bf16)
-- **Labeling Model**: Qwen/Qwen3-8B-Base (bf16)
-- **Key Finding**: 21.9% disagreement rate between human-labeled "best" passages and passages that actually produce lowest LLM loss
-
-### Experimental Setup
-- **Training Data**: 80k MS MARCO examples
-- **Hardware**: 1x H100, 2 epochs
-- **Base Models**: BERT-base-uncased, nomic-embed-text-v1-unsupervised
-- **Evaluation**: MS MARCO test data sample. For each test data example, the question and top retrieved context are passed into a newly initialized decoder model that produces an answer. LLM-as-judge (Gemini 2.0) is used to evaluate the correctness of the answer against the ground truth provided in the original dataset. Retrieval accuracy measures whether the retrieved context matches the context marked as "best" by human annotators in the original MS MARCO dataset.
-
-### Results: Same LLM (Qwen 3-8B for both labeling and evaluation)
-
-| Model | Training Method | Answer Accuracy ↑ | Retrieval Accuracy |
-|-------|----------------|-------------------|-------------------|
-| **BERT Base** | Standard InfoNCE | 45.8% | 30.4% |
-| **BERT Base** | **Soft Labels (Ours)** | **47.0%** ✅ | 29.6% |
-| **Nomic Embed** | Standard InfoNCE | 47.6% | 40.0% |
-| **Nomic Embed** | **Soft Labels (Ours)** | **47.8%** ✅ | 33.6% |
-
-### Results: Cross-LLM Generalization (Qwen labeling → Llama 3.1-8B evaluation)
-
-| Training Method | Answer Accuracy ↑ | Retrieval Accuracy |
-|----------------|-------------------|-------------------|
-| Standard InfoNCE | 33.8% | 38.2% |
-| **Soft Labels (Ours)** | **37.6%** ✅ | 33.6% |
-
-### Key Findings
-
-1. **Validation of Core Hypothesis**: Models trained on soft labels achieve better downstream LLM performance despite sometimes lower retrieval accuracy on human labels, demonstrating that the human labels are suboptimal.
-2. **Cross-LLM Generalization**: Models trained with labels from one LLM (Qwen) generalize well to different LLMs (Llama) during evaluation, often performing even better
-3. **Human Label Limitations**: 21.9% disagreement between human annotations and actual LLM utility demonstrates the noise in traditional training data
-
-*Note: This project is actively under development. Results are preliminary and based on initial experiments.*
 
 ## 🧪 Example Experiments
 
@@ -253,6 +254,3 @@ If you use this framework in your research, please cite:
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🤝 Contributing
-
-Contributions welcome! Please see `CONTRIBUTING.md` for guidelines.

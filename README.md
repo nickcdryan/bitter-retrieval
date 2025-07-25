@@ -4,13 +4,13 @@ A modular training framework for retrieval models that trains on real-valued lab
 
 ## 🎯 Core Hypothesis
 
-Traditional retrieval training relies on binary labels (relevant/irrelevant) that are both noisy and biased toward human intuitions about what makes good context. But what we actually care about is: **does the retrieved context help a downstream LLM generate better answers?**
+Most retrieval models are created by fine-tuning on standard retrieval datasets like MS MARCO, which contain question-answer pairs with context passages labeled by humans as relevant or irrelevant. This traditional approach relies on binary relevance labels that are often noisy and reflect human biases about what constitutes useful context. But what we actually care about is: **does the retrieved context help a downstream LLM generate better answers?**
 
 This framework addresses this by:
 
 1. **Soft Label Generation**: For each (question, context, answer) triplet used in our retrieval dataset (MS MARCO), we measure how well the context actually helps a frozen decoder LLM generate the correct answer by computing the loss over answer tokens. This loss becomes the "soft" utility labels associated with each context.
-2. **Real-Valued Training**: Instead of contrastive loss with binary labels, we train retrieval models to match similarity scores against these real-valued "soft" utility labels  
-3. **End-to-End Evaluation**: We evaluate not on recovering human rankings, but on whether retrieved documents actually improve LLM answer generation
+2. **Real-Valued Training**: Instead of contrastive loss with binary labels, we fine-tune base encoder models models to match similarity scores against these real-valued "soft" utility labels 
+3. **End-to-End Evaluation**: Rather than evaluating our retrieval models on how well they recover the (noisy, possibly biased) labels, we evaluate on whether retrieved documents actually improve LLM answer generation
 
 The goal is to directly optimize for downstream performance rather than proxy metrics, testing whether this approach produces better retrieval models for LLM-assisted question answering.
 
@@ -103,7 +103,7 @@ We've created and published a soft-labeled version of MS MARCO v1.1 with ~100k e
 - **Training Data**: 80k MS MARCO examples
 - **Hardware**: 1x H100, 2 epochs
 - **Base Models**: BERT-base-uncased, nomic-embed-text-v1-unsupervised
-- **Evaluation**: MS MARCO test data sample, LLM-as-judge evaluation with Gemini 2.0
+- **Evaluation**: MS MARCO test data sample. For each test data example, the question and top retrieved context are passed into a newly initialized decoder model that produces an answer. LLM-as-judge (Gemini 2.0) is used to evaluate the correctness of the answer against the ground truth provided in the original dataset. Retrieval accuracy measures whether the retrieved context matches the context marked as "best" by human annotators in the original MS MARCO dataset.
 
 ### Results: Same LLM (Qwen 3-8B for both labeling and evaluation)
 
@@ -123,8 +123,8 @@ We've created and published a soft-labeled version of MS MARCO v1.1 with ~100k e
 
 ### Key Findings
 
-1. **Validation of Core Hypothesis**: Models trained on soft labels achieve better downstream LLM performance despite sometimes lower retrieval accuracy on human labels
-2. **Cross-LLM Generalization**: Models trained with labels from one LLM (Qwen) generalize well to different LLMs (Llama), often performing even better
+1. **Validation of Core Hypothesis**: Models trained on soft labels achieve better downstream LLM performance despite sometimes lower retrieval accuracy on human labels, demonstrating that the human labels are suboptimal.
+2. **Cross-LLM Generalization**: Models trained with labels from one LLM (Qwen) generalize well to different LLMs (Llama) during evaluation, often performing even better
 3. **Human Label Limitations**: 21.9% disagreement between human annotations and actual LLM utility demonstrates the noise in traditional training data
 
 *Note: This project is actively under development. Results are preliminary and based on initial experiments.*

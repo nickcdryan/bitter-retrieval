@@ -13,6 +13,16 @@ import random
 import wandb
 import os
 
+# ========================================
+# CONFIGURE LLM MODEL HERE
+# ========================================
+EVALUATION_LLM_MODEL = "Qwen/Qwen3-8B-Base"  # Change this to any HuggingFace model you want to test
+# Examples:
+# EVALUATION_LLM_MODEL = "meta-llama/Llama-3.2-3B"
+# EVALUATION_LLM_MODEL = "microsoft/DialoGPT-medium"
+# EVALUATION_LLM_MODEL = "mistralai/Mistral-7B-v0.1"
+# ========================================
+
 def main():
     if len(sys.argv) != 2:
         print("Usage: python evaluate_model.py <model_path>")
@@ -21,11 +31,16 @@ def main():
     model_path = sys.argv[1]
     config = get_config()
     
+    # Override LLM model for evaluation
+    config["llm_model"] = EVALUATION_LLM_MODEL
+    print(f"Using LLM model for evaluation: {EVALUATION_LLM_MODEL}")
+    
     # Setup wandb
     model_name = os.path.basename(model_path)
+    llm_model_name = EVALUATION_LLM_MODEL.replace("/", "-")  # Replace / for cleaner names
     if config["wandb_key"]:
         wandb.login(key=config["wandb_key"])
-    wandb.init(project=config["wandb_project"], name=f"eval-{model_name}")
+    wandb.init(project=config["wandb_project"], name=f"eval-{model_name}-{llm_model_name}")
     
     # Setup
     device, bert_tokenizer, llm, llm_tokenizer = setup_device_and_models(config)

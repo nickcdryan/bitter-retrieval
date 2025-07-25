@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+# python evaluate_model.py model_path
+
 import sys
 import torch
 from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
@@ -16,10 +18,11 @@ import os
 # ========================================
 # CONFIGURE LLM MODEL HERE
 # ========================================
-EVALUATION_LLM_MODEL = "Qwen/Qwen3-8B-Base"  # Change this to any HuggingFace model you want to test
+# EVALUATION_LLM_MODEL = "Qwen/Qwen3-8B-Base"  # Change this to any HuggingFace model you want to test
 # Examples:
+# meta-llama/Llama-3.1-8B
 # EVALUATION_LLM_MODEL = "meta-llama/Llama-3.2-3B"
-# EVALUATION_LLM_MODEL = "microsoft/DialoGPT-medium"
+EVALUATION_LLM_MODEL = "meta-llama/Llama-3.1-8B"
 # EVALUATION_LLM_MODEL = "mistralai/Mistral-7B-v0.1"
 # ========================================
 

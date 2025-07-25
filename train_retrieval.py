@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+# OLD: end to end training script
 # poetry run python train_retrieval.py
 
 import torch

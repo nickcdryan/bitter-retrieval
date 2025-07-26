@@ -14,6 +14,9 @@ This framework addresses this by:
 
 The goal is to directly optimize for downstream performance rather than proxy metrics, testing whether this approach produces better retrieval models for LLM-assisted question answering.
 
+![Training Flow](images/training-flow.png)
+*Figure 1: Overview of the bitter retrieval training methodology*
+
 ## 📊 Preliminary Results
 
 ### Experimental Setup
@@ -53,6 +56,9 @@ The goal is to directly optimize for downstream performance rather than proxy me
 1. **Validation of Core Hypothesis**: Models trained on soft labels achieve better downstream LLM performance despite sometimes lower retrieval accuracy on human labels, demonstrating that the human labels are suboptimal.
 2. **Cross-LLM Generalization**: Models trained with labels from one LLM (Qwen) generalize well to different LLMs (Llama) during evaluation, often performing even better
 3. **Human Label Limitations**: 21.9% disagreement between human annotations and actual LLM utility demonstrates the noise in traditional training data
+
+![Label Disagreement](images/label-disagreement.png)
+*Figure 2: Comparison between human-labeled "best" passages vs. passages that actually minimize LLM loss*
 
 ### Dataset
 We've created and published a soft-labeled version of MS MARCO v1.1 with ~100k examples labeled using the approach described above:

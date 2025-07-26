@@ -31,12 +31,22 @@ The goal is to directly optimize for downstream performance rather than proxy me
 | **Nomic Embed** | Standard InfoNCE | 47.6% | 40.0% |
 | **Nomic Embed** | **Soft Labels (Ours)** | **47.8%** ✅ | 33.6% |
 
-### Results: Cross-LLM Generalization (Qwen labeling → Llama 3.1-8B evaluation) (Nomic)
+### Results: Cross-LLM Generalization 
+
+**(Nomic Embed trained with Qwen-generated labels → Llama 3.1-8B evaluation)**
 
 | Training Method | Answer Accuracy ↑ | Retrieval Accuracy |
 |----------------|-------------------|-------------------|
 | Standard InfoNCE | 33.8% | 38.2% |
 | **Soft Labels (Ours)** | **37.6%** ✅ | 33.6% |
+
+
+**(BERT trained with Llama-generated labels → Qwen 3 8B evaluation)**
+
+| Training Method | Answer Accuracy ↑ | Retrieval Accuracy |
+|----------------|-------------------|-------------------|
+| Standard InfoNCE | 46.4% | 31.8% |
+| **Soft Labels (Ours)** | **47.8%** ✅ | 28.2% |
 
 ### Key Findings
 

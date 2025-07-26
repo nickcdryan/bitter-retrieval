@@ -33,13 +33,13 @@ def get_config():
 
         # LOGGING
         "wandb_project": "bitter-retrieval",
-        "run_name": "standard_infonce-gradclip-temp.02-Nomic-fulltraining-epoch:2-batch:16",
+        "run_name": "kl-margin:3-gradclip-temp.01-BERT-llamadata-fulltraining-epoch:2-batch:32",
 
         # MODELS
         # Decoder LLM for evaluation
-        "llm_model": "Qwen/Qwen3-8B-Base", 
+        "llm_model": "meta-llama/Llama-3.1-8B", #"Qwen/Qwen3-8B-Base", 
         # Embedding model trained for retrieval
-        "encoder_model": "nomic-ai/nomic-embed-text-v1-unsupervised", #"google-bert/bert-base-uncased", #
+        "encoder_model": "google-bert/bert-base-uncased", # "nomic-ai/nomic-embed-text-v1-unsupervised", 
         
 
         # DATA PARAMS
@@ -51,10 +51,10 @@ def get_config():
         "generation_max_tokens": 40,
         
         # TRAINING PARAMS
-        "batch_size": 16,
+        "batch_size": 32,
         "learning_rate": 2e-5,
         "num_epochs": 2,  # Just 1 epoch for testing
-        "validation_frequency": 1000, # steps
+        "validation_frequency": 500, # steps
         "gradient_clipping": True,  # Enable/disable gradient clipping
         "grad_clip_max_norm": 1.0,  # Maximum gradient norm
         "use_warmup": True,  # Enable/disable warmup
@@ -78,8 +78,8 @@ def get_config():
         # "loss_components": {"kl": 0.5, "converted_infonce": 0.5},  # KL + InfoNCE
         # "loss_components": {"kl": 0.8, "mse": 0.2},  # KL + MSE
         # "loss_components": {"margin": 1.0},  # Margin loss only
-        # "loss_components": {"kl": 0.5, "margin": 0.5},  # KL + Margin
-        "loss_components": {"standard_infonce": 1.0},  # Standard InfoNCE (equivalent to train_standard_infonce)
+        "loss_components": {"kl": 0.5, "margin": 0.5},  # KL + Margin
+        #"loss_components": {"standard_infonce": 1.0},  # Standard InfoNCE (equivalent to train_standard_infonce)
         # "loss_components": {"standard_infonce": 0.5, "converted_infonce": 0.5},  # Both InfoNCE types
         # "loss_components": {"kl": 1.0},  # Default: KL only
 

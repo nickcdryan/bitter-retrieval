@@ -2,6 +2,7 @@
 """
 
 poetry run python label_msmarco.py --model Qwen/Qwen3-8B-Base --split test --num 0 --dtype bf16 --upload-hf "nickcdryan/ms_marco_softlabel_Qwen3-8B-Base_bf16"
+poetry run python label_msmarco.py --model meta-llama/Llama-3.1-8B --split test --num 0 --dtype bf16 --upload-hf "nickcdryan/ms_marco_softlabel_llama-3.1-8B_bf16"
 
 PERFORMANCE OPTIMIZATIONS:
     - Global batching for better GPU utilization
@@ -62,6 +63,18 @@ from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+
+# Login to HF if token is available
+hf_token = os.getenv('HF_TOKEN') or os.getenv('HUGGINGFACE_TOKEN')
+if hf_token:
+    try:
+        from huggingface_hub import login
+        login(token=hf_token)
+        print("✅ Authenticated with Hugging Face")
+    except ImportError:
+        print("Warning: huggingface_hub not available for authentication")
+    except Exception as e:
+        print(f"Warning: HF authentication failed: {e}")
 
 
 def compute_llm_soft_labels(data, llm, llm_tokenizer, device, batch_size, max_samples):
@@ -286,13 +299,15 @@ def main():
         if use_flash_attn:
             llm = AutoModelForCausalLM.from_pretrained(
                 args.model, 
+                trust_remote_code=True,
                 attn_implementation="flash_attention_2", 
                 torch_dtype=torch_dtype
             ).to(device).eval()
             print(f"Loaded with Flash Attention 2 and {args.dtype}")
         else:
             llm = AutoModelForCausalLM.from_pretrained(
-                args.model, 
+                args.model,
+                trust_remote_code=True, 
                 torch_dtype=torch_dtype
             ).to(device).eval()
             print(f"Loaded with {args.dtype} (Flash Attention disabled)")

@@ -19,8 +19,9 @@ except ImportError:
     print("python-dotenv not installed - using system environment variables only")
 
 # CONFIGURE THESE VARIABLES
-MODEL_PATH = "models/kl-margin:3-gradclip-temp.01-Nomic-fulltraining-epoch:2-batch:16_modular_kl_0.5_margin_0.5/"  # Change this to your model path
-REPO_NAME = "bitter-retrieval-kl-margin-nomic"  # Change this to your desired repo name
+
+MODEL_PATH = "models/standard_infonce-gradclip-temp.02-BERT-llamadata-fulltraining-epoch:2-batch:32_modular_standard_infonce_1.0"
+REPO_NAME = "bitter-retrieval-standard-infonce-BERT-llamadata"  # Change this to your desired repo name
 PRIVATE = False  # Set to True if you want a private repo
 
 def push_model():

@@ -9,7 +9,7 @@ Most retrieval models are created by fine-tuning on standard retrieval datasets 
 This framework addresses this by:
 
 1. **Soft Label Generation**: For each (question, context, answer) triplet used in our retrieval dataset (MS MARCO), we measure how well the context actually helps a frozen decoder LLM generate the correct answer by computing the loss over answer tokens. This loss becomes the "soft" utility labels associated with each context.
-2. **Real-Valued Training**: Instead of contrastive loss with binary labels, we fine-tune base encoder models models to match similarity scores against these real-valued "soft" utility labels 
+2. **Real-Valued Training**: Instead of contrastive loss with binary labels, we fine-tune base encoder models to match similarity scores against these real-valued "soft" utility labels 
 3. **End-to-End Evaluation**: Rather than evaluating our retrieval models on how well they recover the (noisy, possibly biased) labels, we evaluate on whether retrieved documents actually improve LLM answer generation
 
 The goal is to directly optimize for downstream performance rather than proxy metrics, testing whether this approach produces better retrieval models for LLM-assisted question answering.
@@ -61,10 +61,14 @@ The goal is to directly optimize for downstream performance rather than proxy me
 *Figure 2: Comparison between human-labeled "best" passages vs. passages that actually minimize LLM loss*
 
 ### Dataset
-We've created and published a soft-labeled version of MS MARCO v1.1 with ~100k examples labeled using the approach described above:
+We've created and published soft-labeled versions of MS MARCO v1.1 with ~100k examples labeled using the approach described above:
 - **Dataset**: [nickcdryan/ms_marco_softlabel_Qwen3-8B-Base_bf16](https://huggingface.co/datasets/nickcdryan/ms_marco_softlabel_Qwen3-8B-Base_bf16)
-- **Labeling Model**: Qwen/Qwen3-8B-Base (bf16)
-- **Key Finding**: 21.9% disagreement rate between human-labeled "best" passages and passages that actually produce lowest LLM loss
+- **Labeling Model**: Qwen3-8B-Base (bf16)
+- **Key Finding**: 20.3% disagreement rate between human-labeled "best" passages and passages that actually produce lowest LLM loss
+
+- **Dataset**: [nickcdryan/ms_marco_softlabel_llama-3.1-8B_bf16](https://huggingface.co/datasets/nickcdryan/ms_marco_softlabel_llama-3.1-8B_bf16)
+- **Labeling Model**: Llama-3.1-8B (bf16)
+- **Key Finding**: 22.2% disagreement rate between human-labeled "best" passages and passages that actually produce lowest LLM loss
 
 *Note: This project is actively under development. Results are preliminary and based on initial experiments.*
 
